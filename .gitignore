@@ -1,0 +1,19 @@
+# Build artifacts
+target/
+**/target/
+
+# OS files
+.DS_Store
+**/.DS_Store
+
+# Python
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Archives
+*.zip
+
+# Local cargo configs
+.cargo/config.toml
+**/.cargo/config.toml
