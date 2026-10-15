@@ -1,0 +1,25 @@
+uuid = "250ba716-127c-413b-b891-48c80e7d3f3a"
+name = "boxes"
+author = "Eddie Kramer / Olympic Studios"
+comment = "Parallel crushing preset for drum bus blending"
+tags = ["drums", "parallel", "crush"]
+
+[params]
+mode = 1
+link = 1
+analog = 2
+bypass = 0
+
+threshold_a = -12.0
+ratio_a = 4
+decay_a = 0
+gate_thresh_a = -30.0
+gate_atten_a = 0
+output_a = 16.8
+
+threshold_b = -12.0
+ratio_b = 4
+decay_b = 0
+gate_thresh_b = -30.0
+gate_atten_b = 0
+output_b = 16.8

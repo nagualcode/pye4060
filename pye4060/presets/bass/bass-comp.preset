@@ -1,0 +1,25 @@
+uuid = "06b9ad90-8a78-4833-be0d-ab30d954bea9"
+name = "Bass Comp"
+author = "Eddie Kramer / Olympic Studios"
+comment = "Warm, solid electric bass leveling with punchy note definition"
+tags = ["bass", "warmth", "punch"]
+
+[params]
+mode = 1
+link = 1
+analog = 2
+bypass = 0
+
+threshold_a = 8.0
+ratio_a = 2
+decay_a = 1
+gate_thresh_a = -30.0
+gate_atten_a = 0
+output_a = 1.5
+
+threshold_b = 8.0
+ratio_b = 2
+decay_b = 1
+gate_thresh_b = -30.0
+gate_atten_b = 0
+output_b = 1.5

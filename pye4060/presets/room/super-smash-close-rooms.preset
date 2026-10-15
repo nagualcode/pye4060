@@ -1,0 +1,25 @@
+uuid = "030643ce-bd48-4cf6-bfce-062cf18a065d"
+name = "Super Smash Close Rooms"
+author = "Eddie Kramer / Olympic Studios"
+comment = "Massive explosive close room energy (Bonham/Kramer style)"
+tags = ["room", "crush", "zeppelin"]
+
+[params]
+mode = 1
+link = 1
+analog = 2
+bypass = 0
+
+threshold_a = -14.0
+ratio_a = 4
+decay_a = 0
+gate_thresh_a = -30.0
+gate_atten_a = 0
+output_a = 18.0
+
+threshold_b = -14.0
+ratio_b = 4
+decay_b = 0
+gate_thresh_b = -30.0
+gate_atten_b = 0
+output_b = 18.0

@@ -209,6 +209,36 @@ In your DAW (Ableton Live, Reaper, Logic Pro, Cubase, Studio One, Bitwig, Pro To
 
 ---
 
+## 🎚️ Factory Preset Library (21 Presets)
+
+The plugin includes an authentic factory preset library organized by instrument and session type, including all classic **Eddie Kramer / Olympic Studios** settings extracted from the original hardware model, alongside broadcast and modern M/S mastering presets:
+
+| Category | Preset Name | Ratio | Decay | Setting / Sonic Purpose |
+|:---|:---|:---:|:---:|:---|
+| **Vocal** | `Lead Vocal Comp` | 3:1 | 100 ms | Fast attack transparent vocal leveling from classic Olympic sessions |
+| **Drums** | `Kick Drum Comp` | 3:1 | 100 ms | Tight, punchy kick transient control |
+| **Drums** | `Snare Drum Norm Comp` | 3:1 | 100 ms | Classic rock snare drum compression with fast snap |
+| **Drums** | `Snare Drum SuperHype Comp` | Limit | 100 ms | Explosive brickwall limiter snare smash |
+| **Drums** | `Toms Norm Comp` | 3:1 | 100 ms | Controlled tom sustain and stick impact |
+| **Drums** | `Toms Super Smash` | Limit | 100 ms | Heavy tom pump and aggressive room sustain |
+| **Drums** | `Boxes / Parallel Smash` | Limit | 100 ms | Parallel crushing preset for drum bus blending |
+| **Drums** | `Hendrix Drum Smash (M-S)` | Limit / 3:1 | 100 ms / 200 ms | Aggressive brickwall limiting on center mono punch with dynamic stereo width |
+| **Room** | `Medium Room Comp` | 2:1 | 100 ms | Ambient drum room enhancement with natural decay |
+| **Room** | `Norm Close Room Comp` | 2:1 | 100 ms | Tight, controlled close room ambiance |
+| **Room** | `Norm Room Comp` | 2:1 | 100 ms | Balanced room compression for cohesive space |
+| **Room** | `Super Smash Close Rooms` | Limit | 100 ms | Massive explosive room energy (Bonham/Kramer style) |
+| **Room** | `Super Smash Room` | Limit | 100 ms | All-out room compression and brickwall distortion |
+| **Acoustic** | `AGTR Norm Comp` | 2:1 | 100 ms | Smooth acoustic guitar strumming leveling |
+| **Acoustic** | `AGTR SMASH Comp` | 2:1 | 3200 ms | Slow release acoustic guitar sustain boost |
+| **Bass** | `Bass Comp` | 3:1 | 200 ms | Warm, solid electric bass leveling with punchy note definition |
+| **Bass** | `Bass Comp 2` | Limit | 200 ms | Limiter mode bass control for high-energy rock grooves |
+| **Init** | `Default 3-1` | 3:1 | 400 ms | Factory default Pye TVT 84-4060 linear setup state |
+| **Broadcast** | `BBC Broadcast Limiter` | Limit | 100 ms | 100% modulation brickwall limiter with British 50Hz hum and 4dB Noise Gate |
+| **Mastering** | `Olympic Master Bus Glue (M-S)`| 2:1 | 400 ms / 800 ms | Subtle Mid/Side cohesion with decoupled timing |
+| **Tracking** | `Dual Mono Tracking (Vocal & Bass)`| 3:1 | 200 ms / 400 ms | Ch A dialed for vocal presence and Ch B for bass foundation |
+
+---
+
 ## 📋 Roadmap & Future Improvements (ToDo)
 - [ ] **External Sidechain (Sidechain Input):** Expose auxiliary sidechain bus in VST3/CLAP for external ducking and sidechain keying.
 - [ ] **Custom Skeuomorphic GUI Skin:** Vintage hammertone grey faceplate, Marconi-style knurled pointer knobs, and animated moving-coil meter needle.

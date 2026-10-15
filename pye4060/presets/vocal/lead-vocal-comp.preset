@@ -1,0 +1,25 @@
+uuid = "d792d007-d79b-42e8-8e48-ee7efc9d03b0"
+name = "Lead Vocal Comp"
+author = "Eddie Kramer / Olympic Studios"
+comment = "Fast attack transparent vocal leveling from classic Olympic sessions"
+tags = ["vocal", "lead", "olympic"]
+
+[params]
+mode = 1
+link = 1
+analog = 2
+bypass = 0
+
+threshold_a = 6.0
+ratio_a = 2
+decay_a = 0
+gate_thresh_a = -30.0
+gate_atten_a = 0
+output_a = 3.8
+
+threshold_b = 6.0
+ratio_b = 2
+decay_b = 0
+gate_thresh_b = -30.0
+gate_atten_b = 0
+output_b = 3.8

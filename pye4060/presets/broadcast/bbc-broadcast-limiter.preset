@@ -1,0 +1,25 @@
+uuid = "becb881a-3f8e-4382-b76f-d581e8acd8f3"
+name = "BBC Broadcast Limiter"
+author = "Pye TVT Limited"
+comment = "100% modulation brickwall limiter with British 50Hz hum and 4dB Noise Gate"
+tags = ["broadcast", "bbc", "limit", "gate"]
+
+[params]
+mode = 1
+link = 1
+analog = 1
+bypass = 0
+
+threshold_a = 0.0
+ratio_a = 4
+decay_a = 0
+gate_thresh_a = -35.0
+gate_atten_a = 2
+output_a = 0.0
+
+threshold_b = 0.0
+ratio_b = 4
+decay_b = 0
+gate_thresh_b = -35.0
+gate_atten_b = 2
+output_b = 0.0

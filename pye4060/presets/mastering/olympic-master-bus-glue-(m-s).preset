@@ -1,0 +1,25 @@
+uuid = "3f7a8845-acbf-4a1f-a753-bd4f3419d2bb"
+name = "Olympic Master Bus Glue (M-S)"
+author = "Jardim Sonoro"
+comment = "Subtle 2:1 Mid/Side cohesion with independent timing on Mid and Side channels"
+tags = ["mastering", "glue", "m-s", "bus"]
+
+[params]
+mode = 2
+link = 1
+analog = 0
+bypass = 0
+
+threshold_a = -4.0
+ratio_a = 1
+decay_a = 2
+gate_thresh_a = -40.0
+gate_atten_a = 0
+output_a = 1.5
+
+threshold_b = 0.0
+ratio_b = 1
+decay_b = 3
+gate_thresh_b = -40.0
+gate_atten_b = 0
+output_b = 1.0

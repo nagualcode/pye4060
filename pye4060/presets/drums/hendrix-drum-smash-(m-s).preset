@@ -1,0 +1,25 @@
+uuid = "237ba248-9530-468d-86b7-47ef6fc0a258"
+name = "Hendrix Drum Smash (M-S)"
+author = "Eddie Kramer Style"
+comment = "Aggressive brickwall limiting on center mono punch (Kick/Snare) with dynamic stereo room width"
+tags = ["drums", "hendrix", "m-s", "crush"]
+
+[params]
+mode = 2
+link = 0
+analog = 2
+bypass = 0
+
+threshold_a = -10.0
+ratio_a = 4
+decay_a = 0
+gate_thresh_a = -30.0
+gate_atten_a = 0
+output_a = 8.0
+
+threshold_b = -4.0
+ratio_b = 2
+decay_b = 1
+gate_thresh_b = -30.0
+gate_atten_b = 0
+output_b = 4.0

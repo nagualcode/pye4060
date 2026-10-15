@@ -1,0 +1,25 @@
+uuid = "1f477710-f828-45e6-ba92-550a3c077235"
+name = "Dual Mono Tracking (Vocal & Bass)"
+author = "Jardim Sonoro"
+comment = "Channel A dialed for vocal presence (3:1, 200ms) and Channel B for bass foundation (3:1, 400ms)"
+tags = ["tracking", "dual-mono", "vocal", "bass"]
+
+[params]
+mode = 0
+link = 0
+analog = 0
+bypass = 0
+
+threshold_a = 4.0
+ratio_a = 2
+decay_a = 1
+gate_thresh_a = -30.0
+gate_atten_a = 2
+output_a = 2.5
+
+threshold_b = 6.0
+ratio_b = 2
+decay_b = 2
+gate_thresh_b = -30.0
+gate_atten_b = 0
+output_b = 1.0

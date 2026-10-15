@@ -1,0 +1,25 @@
+uuid = "5214af66-097f-4b6c-9d24-ce7e96a5028b"
+name = "Default 3-1"
+author = "Jardim Sonoro"
+comment = "Default Pye TVT 84-4060 3:1 compression state"
+tags = ["default", "init"]
+
+[params]
+mode = 1
+link = 1
+analog = 0
+bypass = 0
+
+threshold_a = 16.0
+ratio_a = 2
+decay_a = 2
+gate_thresh_a = -30.0
+gate_atten_a = 0
+output_a = 0.0
+
+threshold_b = 16.0
+ratio_b = 2
+decay_b = 2
+gate_thresh_b = -30.0
+gate_atten_b = 0
+output_b = 0.0

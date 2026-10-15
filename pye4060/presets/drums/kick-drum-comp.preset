@@ -1,0 +1,25 @@
+uuid = "96452c13-6cc1-4424-9df0-52288cb1aa76"
+name = "Kick Drum Comp"
+author = "Eddie Kramer / Olympic Studios"
+comment = "Tight, punchy kick drum transient control"
+tags = ["drums", "kick", "punch"]
+
+[params]
+mode = 1
+link = 1
+analog = 2
+bypass = 0
+
+threshold_a = 4.0
+ratio_a = 2
+decay_a = 0
+gate_thresh_a = -30.0
+gate_atten_a = 0
+output_a = 0.0
+
+threshold_b = 4.0
+ratio_b = 2
+decay_b = 0
+gate_thresh_b = -30.0
+gate_atten_b = 0
+output_b = 0.0

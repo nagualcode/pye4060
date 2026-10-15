@@ -1,0 +1,25 @@
+uuid = "89464ec1-9583-4119-8891-2228f7e1010f"
+name = "Snare Drum Norm Comp"
+author = "Eddie Kramer / Olympic Studios"
+comment = "Classic rock snare drum compression with fast snap"
+tags = ["drums", "snare", "rock"]
+
+[params]
+mode = 1
+link = 1
+analog = 2
+bypass = 0
+
+threshold_a = 10.0
+ratio_a = 2
+decay_a = 0
+gate_thresh_a = -30.0
+gate_atten_a = 0
+output_a = 2.0
+
+threshold_b = 10.0
+ratio_b = 2
+decay_b = 0
+gate_thresh_b = -30.0
+gate_atten_b = 0
+output_b = 2.0

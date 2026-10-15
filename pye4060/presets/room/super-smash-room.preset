@@ -1,0 +1,25 @@
+uuid = "dcb83c18-f1d6-4d67-b921-d29935ad37f1"
+name = "Super Smash Room"
+author = "Eddie Kramer / Olympic Studios"
+comment = "All-out room compression and brickwall distortion"
+tags = ["room", "smash", "limit"]
+
+[params]
+mode = 1
+link = 1
+analog = 2
+bypass = 0
+
+threshold_a = -24.0
+ratio_a = 4
+decay_a = 0
+gate_thresh_a = -30.0
+gate_atten_a = 0
+output_a = 18.0
+
+threshold_b = -24.0
+ratio_b = 4
+decay_b = 0
+gate_thresh_b = -30.0
+gate_atten_b = 0
+output_b = 18.0
