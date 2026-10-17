@@ -139,13 +139,13 @@ impl PyeEngine {
         };
 
         // Dry path through identical resampling filters keeps the blend phase
-        // coherent with the wet path.
-        let mut d = [[0.0; MAX_OS]; 2];
-        self.dry_os[0].up(l, &mut d[0]);
-        self.dry_os[1].up(r, &mut d[1]);
-        let dl = self.dry_os[0].down(&d[0]);
-        let dr = self.dry_os[1].down(&d[1]);
+        // coherent with the wet path; skip when 100% wet.
         if p.mix < 1.0 {
+            let mut d = [[0.0; MAX_OS]; 2];
+            self.dry_os[0].up(l, &mut d[0]);
+            self.dry_os[1].up(r, &mut d[1]);
+            let dl = self.dry_os[0].down(&d[0]);
+            let dr = self.dry_os[1].down(&d[1]);
             yl = dl + (yl - dl) * p.mix;
             yr = dr + (yr - dr) * p.mix;
         }
@@ -167,10 +167,14 @@ impl PyeEngine {
             self.gain_min[0] = self.gain_min[0].min(g);
         }
         let y = self.os[0].down(&wet) * p.output[0];
-        let mut d = [0.0; MAX_OS];
-        self.dry_os[0].up(x, &mut d);
-        let dry = self.dry_os[0].down(&d);
-        if p.mix < 1.0 { dry + (y - dry) * p.mix } else { y }
+        if p.mix < 1.0 {
+            let mut d = [0.0; MAX_OS];
+            self.dry_os[0].up(x, &mut d);
+            let dry = self.dry_os[0].down(&d);
+            dry + (y - dry) * p.mix
+        } else {
+            y
+        }
     }
 
     /// Peak attenuation per channel since the previous call, dB.

@@ -434,15 +434,32 @@ impl PluginLogic for Pye4060 {
         let vu = &mut state.vu;
 
         if num_channels >= 2 {
+            let mut prev_th_a = f64::INFINITY;
+            let mut prev_th_b = f64::INFINITY;
+            let mut prev_out_a = f64::INFINITY;
+            let mut prev_out_b = f64::INFINITY;
             buffer.for_each_frame_io::<2, 2, _>(|frame_in, frame_out| {
                 let th_a = f64::from(params.threshold_a.read());
                 let th_b = f64::from(params.threshold_b.read());
                 let out_a = f64::from(params.output_a.read());
                 let out_b = f64::from(params.output_b.read());
                 let (th_b, out_b) = if stereo { (th_a, out_a) } else { (th_b, out_b) };
-                fp.tick[0].turnover = db_to_lin(th_a + TURNOVER_REF_DB);
-                fp.tick[1].turnover = db_to_lin(th_b + TURNOVER_REF_DB);
-                fp.output = [db_to_lin(out_a), db_to_lin(out_b)];
+                if (th_a - prev_th_a).abs() > 1e-7 {
+                    prev_th_a = th_a;
+                    fp.tick[0].turnover = db_to_lin(th_a + TURNOVER_REF_DB);
+                }
+                if (th_b - prev_th_b).abs() > 1e-7 {
+                    prev_th_b = th_b;
+                    fp.tick[1].turnover = if stereo { fp.tick[0].turnover } else { db_to_lin(th_b + TURNOVER_REF_DB) };
+                }
+                if (out_a - prev_out_a).abs() > 1e-7 {
+                    prev_out_a = out_a;
+                    fp.output[0] = db_to_lin(out_a);
+                }
+                if (out_b - prev_out_b).abs() > 1e-7 {
+                    prev_out_b = out_b;
+                    fp.output[1] = if stereo { fp.output[0] } else { db_to_lin(out_b) };
+                }
                 fp.mix = f64::from(params.mix.read());
 
                 let (l, r) = engine.process_frame(f64::from(frame_in[0]), f64::from(frame_in[1]), &fp);
@@ -455,9 +472,19 @@ impl PluginLogic for Pye4060 {
             });
         } else if num_channels == 1 {
             let _ = (params.threshold_b.read_after(n), params.output_b.read_after(n));
+            let mut prev_th_a = f64::INFINITY;
+            let mut prev_out_a = f64::INFINITY;
             buffer.for_each_frame_io::<1, 1, _>(|frame_in, frame_out| {
-                fp.tick[0].turnover = db_to_lin(f64::from(params.threshold_a.read()) + TURNOVER_REF_DB);
-                fp.output[0] = db_to_lin(f64::from(params.output_a.read()));
+                let th_a = f64::from(params.threshold_a.read());
+                let out_a = f64::from(params.output_a.read());
+                if (th_a - prev_th_a).abs() > 1e-7 {
+                    prev_th_a = th_a;
+                    fp.tick[0].turnover = db_to_lin(th_a + TURNOVER_REF_DB);
+                }
+                if (out_a - prev_out_a).abs() > 1e-7 {
+                    prev_out_a = out_a;
+                    fp.output[0] = db_to_lin(out_a);
+                }
                 fp.mix = f64::from(params.mix.read());
                 let y = engine.process_mono(f64::from(frame_in[0]), &fp);
                 vu[0].process(y);

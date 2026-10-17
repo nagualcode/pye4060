@@ -8,7 +8,7 @@
 //!                        +--> noise gate detector (pad on output attenuator)
 //! ```
 
-use crate::biquad::{Biquad, OnePole};
+use crate::biquad::Biquad;
 use crate::noise_gate::NoiseGate;
 use crate::transformer::{AnalogMode, NoiseSource, OutputStage, ProgrammeChain};
 
@@ -56,7 +56,7 @@ pub struct PyeChannel {
     chain: ProgrammeChain,
     output: OutputStage,
     gate: NoiseGate,
-    t4_hp: OnePole,
+    t4_hp: Biquad,
     sc_filter: ScFilter,
     sc_hp: Biquad,
     noise: NoiseSource,
@@ -69,8 +69,9 @@ impl PyeChannel {
             chain: ProgrammeChain::new(fs),
             output: OutputStage::new(fs),
             gate: NoiseGate::new(fs),
-            // T4 772201 side-chain transformer: small core, early LF roll-off.
-            t4_hp: OnePole::high_pass(18.0, fs),
+            // T4 772201 side-chain transformer coupled via C14a&b: underdamped
+            // 2-pole LF roll-off with slight ~20 Hz primary inductance peak.
+            t4_hp: Biquad::high_pass(16.5, 0.92, fs),
             sc_filter: ScFilter::Off,
             sc_hp: Biquad::identity(),
             noise: NoiseSource::new(seed),
@@ -106,7 +107,8 @@ impl PyeChannel {
         let hiss = if analog { HISS_PRE * self.noise.hiss() } else { 0.0 };
         let s = self.chain.chop(u, gain, hiss);
 
-        let sc = self.sc_hp.process(self.t4_hp.process(s));
+        let sc = self.t4_hp.process(s);
+        let sc = if self.sc_filter == ScFilter::Off { sc } else { self.sc_hp.process(sc) };
 
         let mut y = self.output.process(s * p.turnover * gate);
         if analog {

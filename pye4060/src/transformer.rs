@@ -26,7 +26,7 @@ use crate::biquad::{Biquad, OnePole};
 /// Post-chopper amplifier clip point, internal units (~ +21 dB).
 const POST_CLIP: f64 = 11.2;
 /// Signal passed around the clipped stage by its feedback network.
-const POST_LEAK: f64 = 0.12;
+const POST_LEAK: f64 = 0.16;
 /// Second-order coefficient of the post-chopper amplifier: H2 is -64 dB
 /// at the turnover and rises 1 dB per dB of level.
 const POST_H2: f64 = 0.0012;
@@ -49,11 +49,11 @@ fn soft_clip(x: f64, pos: f64, neg: f64) -> f64 {
     let r = x / c;
     let r2 = r * r;
     let r6 = r2 * r2 * r2;
-    if r2 < 0.04 {
-        // Far below the knee: first-order expansion, error < 1e-9.
-        return x * (1.0 - r6 / 6.0);
+    if r2 < 0.09 {
+        // Below the knee: second-order binomial expansion, error < 2e-9.
+        return x * (1.0 - r6 * ((1.0 / 6.0) - (7.0 / 72.0) * r6));
     }
-    x / (1.0 + r6).powf(1.0 / 6.0)
+    x / (1.0 + r6).sqrt().cbrt()
 }
 
 /// Feedback amplifier: hard knee, plus the signal its feedback network
@@ -121,8 +121,12 @@ impl ProgrammeChain {
         self.last_gain = gain;
         let s = (u + noise) * gain + ft;
         let s = self.lc_pair2.process(self.lc_pair1.process(self.lc_real.process(s)));
-        let s = self.post_hp.process(self.t2_peak.process(s));
-        soft_clip_leaky(s + POST_H2 * s * s, POST_CLIP, POST_CLIP * 1.12, POST_LEAK)
+        let s = self.t2_peak.process(s);
+        // Single-ended Class-A collector stage (VT3-VT5) clips asymmetrically
+        // on one rail first; C16a&b (post_hp) AC-couples its output.
+        let h2 = POST_H2 * (0.45 + 0.55 * gain * gain);
+        let s = soft_clip_leaky(s + h2 * s * s, POST_CLIP, POST_CLIP * 2.4, POST_LEAK);
+        self.post_hp.process(s)
     }
 }
 
@@ -224,7 +228,26 @@ impl NoiseSource {
         if self.phase >= std::f64::consts::TAU {
             self.phase -= std::f64::consts::TAU;
         }
-        let p = self.phase;
-        amps[0] * p.sin() + amps[1] * (2.0 * p + 0.6).sin() + amps[2] * (3.0 * p + 1.1).sin() + amps[3] * (4.0 * p + 2.3).sin()
+        // Single sin_cos + Chebyshev angle-addition recurrence for 2p, 3p, 4p.
+        let (s1, c1) = self.phase.sin_cos();
+        let s2 = 2.0 * s1 * c1;
+        let c2 = c1 * c1 - s1 * s1;
+        let s3 = s2 * c1 + c2 * s1;
+        let c3 = c2 * c1 - s2 * s1;
+        let s4 = 2.0 * s2 * c2;
+        let c4 = c2 * c2 - s2 * s2;
+
+        // Precomputed cos/sin of phase offsets (0.6, 1.1, 2.3 rad).
+        const C06: f64 = 0.825_335_614_909_678_3;
+        const S06: f64 = 0.564_642_473_395_035_4;
+        const C11: f64 = 0.453_596_121_425_577_3;
+        const S11: f64 = 0.891_207_360_061_435_4;
+        const C23: f64 = -0.666_276_021_279_824_1;
+        const S23: f64 = 0.745_705_212_176_720_3;
+
+        amps[0] * s1
+            + amps[1] * (s2 * C06 + c2 * S06)
+            + amps[2] * (s3 * C11 + c3 * S11)
+            + amps[3] * (s4 * C23 + c4 * S23)
     }
 }

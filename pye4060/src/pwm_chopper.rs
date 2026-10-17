@@ -60,10 +60,36 @@ impl PyeRatio {
 
     /// Turnover relative to the threshold dial. In the limit position the
     /// turnover is "automatically set 8 dB above the level indicated by the
-    /// threshold control" (manual ch. 2, Fig. 2.2).
+    /// threshold control" (manual ch. 2, Fig. 2.2). In the 2:1 position the
+    /// lower SWB2 shunt resistor (R62 910R vs R61 2k7 / R60 8k2) shifts the
+    /// effective OA47/VT16 conduction threshold up by ~1.6 dB.
     #[inline]
     pub fn turnover_offset_db(self) -> f64 {
-        if self == PyeRatio::Limit { 8.0 } else { 0.0 }
+        match self {
+            PyeRatio::Limit => 8.0,
+            PyeRatio::Ratio2_1 => 1.6,
+            _ => 0.0,
+        }
+    }
+
+    /// Exact integer power `r^(ratio - 1)` without transcendental `powf`.
+    #[inline(always)]
+    pub fn pow_ratio(self, r: f64) -> f64 {
+        match self {
+            PyeRatio::Ratio1_1 => 1.0,
+            PyeRatio::Ratio2_1 => r,
+            PyeRatio::Ratio3_1 => r * r,
+            PyeRatio::Ratio5_1 => {
+                let r2 = r * r;
+                r2 * r2
+            }
+            PyeRatio::Limit => {
+                let r2 = r * r;
+                let r4 = r2 * r2;
+                let r8 = r4 * r4;
+                r8 * r8 * r8
+            }
+        }
     }
 
     /// SWB1 opens the side chain in the linear (1:1) position.
@@ -120,6 +146,7 @@ const KNEE: f64 = 0.06;
 /// Per-sample coefficients derived from the switch settings.
 #[derive(Clone, Copy, Debug)]
 pub struct ControlCoeffs {
+    pub ratio: PyeRatio,
     pub exponent: f64,
     pub inv_turnover: f64,
     pub decay_k: f64,
@@ -129,6 +156,7 @@ pub struct ControlCoeffs {
 impl ControlCoeffs {
     pub fn new(ratio: PyeRatio, decay: PyeDecay, fs: f64) -> Self {
         Self {
+            ratio,
             exponent: ratio.exponent(),
             inv_turnover: 10f64.powf(-ratio.turnover_offset_db() / 20.0),
             decay_k: 1.0 - (-1.0 / (decay.tau_seconds() * fs)).exp(),
@@ -149,7 +177,7 @@ pub fn detector_target(level: f64, c: &ControlCoeffs) -> f64 {
     if r <= 0.9 {
         return 0.0;
     }
-    let e = r.powf(c.exponent) - 1.0;
+    let e = c.ratio.pow_ratio(r) - 1.0;
     // Smooth max(e, 0): the diode bridge does not switch on abruptly.
     let k = KNEE * c.exponent;
     let v = 0.5 * (e + (e * e + k * k).sqrt()) - 0.5 * k;
