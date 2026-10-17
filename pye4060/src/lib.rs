@@ -1,20 +1,21 @@
-//! Pye TVT 84-4060 Classic PWM Compressor / Limiter Audio Plugin.
+//! Pye TVT 4060 compression amplifier (circuit 845751/01) - audio plugin.
 //!
-//! Faithful component-level reconstruction of the legendary Olympic Studios
-//! dynamics processor used by Eddie Kramer on Jimi Hendrix, Led Zeppelin, and The Rolling Stones.
-//!
-//! Features:
-//! - High-frequency Pulse Width Modulation (PWM) chopper gain reduction (VT2 V405)
-//! - Germanium diode full-wave bridge rectifier (OA47) with authentic exponential soft knee
-//! - Switched 6-position RC decay constants (100ms - 3200ms) with 22uF timing capacitor
-//! - Automatic +8 dB threshold turnover shift in LIMIT mode
-//! - Integrated broadcast Noise Gate (Type 845751/01) with 250ms hold/decay and 1ms attack
-//! - 5-pole LC anti-carrier low-pass filter (L1, L2 52.5mH, C5-C7 0.0033uF)
-//! - Discrete push-pull output driver (VT9 2N4062, VT10 2N3053) & transformer T2 with H2 asymmetry
-//! - Dual Mono, Stereo, and Mid/Side (M/S) processing topologies with Channel Linking
-//! - Defeatable British (50 Hz) and US (60 Hz) analog power-rail hum modeling
+//! Component-level model of the PWM compressor/limiter Eddie Kramer used at
+//! Olympic Studios on Jimi Hendrix, Led Zeppelin and Rolling Stones sessions:
+//! - feedback side chain (T4, OA47 bridge, ratio amplifier) driving the C23
+//!   timing capacitor, as in the 845751/01 schematic and manual Fig. 2.4
+//! - 250 kHz chopper modelled by its mark:space average, hyperbolic gain law,
+//!   ~21.5 dB maximum attenuation
+//! - audio-rate control ripple: the program-dependent "scrunch"
+//! - 5-pole LC anti-carrier filter, T1/T2 transformers, class-A amplifiers
+//! - integrated noise gate (250 ms hold, 250 ms fade, < 1 ms opening)
+//! - dual mono, stereo and M/S, with C23 control-voltage linking
+//! - 4x oversampled analog path at 44.1/48 kHz (2x at 88.2/96 kHz)
 
 mod biquad;
+mod editor;
+mod engine;
+mod noise_gate;
 mod oversampler;
 mod pwm_chopper;
 mod pye_channel;
@@ -22,11 +23,10 @@ mod transformer;
 
 use std::sync::Arc;
 use truce::prelude::*;
-use truce_gui::IntoLayoutEditor;
-use truce_gui_types::layout::{dropdown, knob, meter, toggle, widgets, GridLayout};
 
-use pye_channel::PyeChannel;
-use pwm_chopper::{PyeDecay, PyeRatio};
+use engine::{FrameParams, PyeEngine, Routing};
+use pwm_chopper::{ControlCoeffs, PyeDecay, PyeRatio};
+use pye_channel::{ScFilter, TURNOVER_REF_DB, TickParams};
 use transformer::AnalogMode;
 
 #[derive(ParamEnum)]
@@ -111,7 +111,7 @@ pub enum GateAttenEnum {
 }
 
 impl GateAttenEnum {
-    pub fn to_db(self) -> f32 {
+    pub fn to_db(self) -> f64 {
         match self {
             GateAttenEnum::Gate0dB => 0.0,
             GateAttenEnum::Gate2dB => 2.0,
@@ -143,12 +143,36 @@ impl From<AnalogModeEnum> for AnalogMode {
     }
 }
 
+#[derive(ParamEnum)]
+pub enum ScFilterEnum {
+    #[name = "Off"]
+    Off,
+    #[name = "60 Hz"]
+    Hz60,
+    #[name = "90 Hz"]
+    Hz90,
+    #[name = "150 Hz"]
+    Hz150,
+}
+
+impl From<ScFilterEnum> for ScFilter {
+    fn from(f: ScFilterEnum) -> Self {
+        match f {
+            ScFilterEnum::Off => ScFilter::Off,
+            ScFilterEnum::Hz60 => ScFilter::Hz60,
+            ScFilterEnum::Hz90 => ScFilter::Hz90,
+            ScFilterEnum::Hz150 => ScFilter::Hz150,
+        }
+    }
+}
+
 #[derive(Params)]
 pub struct Pye4060Params {
     // --- Master / Routing Controls ---
-    #[param(name = "Processing Mode", short_name = "Mode")]
+    #[param(name = "Processing Mode", short_name = "Mode", default = 1)]
     pub mode: EnumParam<ProcessingMode>,
 
+    /// Joins the two C23 control voltages (hardware LINK switch).
     #[param(name = "Link Channels", short_name = "Link", default = true)]
     pub link: BoolParam,
 
@@ -158,21 +182,34 @@ pub struct Pye4060Params {
     #[param(name = "Bypass", short_name = "Bypass", default = false)]
     pub bypass: BoolParam,
 
+    #[param(
+        name = "Mix",
+        short_name = "Mix",
+        range = "linear(0, 1)",
+        default = 1.0,
+        unit = "%",
+        smooth = "exp(20)"
+    )]
+    pub mix: FloatParam,
+
+    #[param(name = "Sidechain HPF", short_name = "SC HPF")]
+    pub sc_filter: EnumParam<ScFilterEnum>,
+
     // --- Channel A (Left / Mid) Controls ---
     #[param(
         name = "Threshold A",
         short_name = "Thresh A",
         range = "linear(-24, 16)",
-        default = 16.0,
+        default = 0.0,
         unit = "dB",
         smooth = "exp(10)"
     )]
     pub threshold_a: FloatParam,
 
-    #[param(name = "Ratio A", short_name = "Ratio A")]
+    #[param(name = "Ratio A", short_name = "Ratio A", default = 2)]
     pub ratio_a: EnumParam<RatioEnum>,
 
-    #[param(name = "Decay A", short_name = "Decay A")]
+    #[param(name = "Decay A", short_name = "Decay A", default = 2)]
     pub decay_a: EnumParam<DecayEnum>,
 
     #[param(
@@ -203,16 +240,16 @@ pub struct Pye4060Params {
         name = "Threshold B",
         short_name = "Thresh B",
         range = "linear(-24, 16)",
-        default = 16.0,
+        default = 0.0,
         unit = "dB",
         smooth = "exp(10)"
     )]
     pub threshold_b: FloatParam,
 
-    #[param(name = "Ratio B", short_name = "Ratio B")]
+    #[param(name = "Ratio B", short_name = "Ratio B", default = 2)]
     pub ratio_b: EnumParam<RatioEnum>,
 
-    #[param(name = "Decay B", short_name = "Decay B")]
+    #[param(name = "Decay B", short_name = "Decay B", default = 2)]
     pub decay_b: EnumParam<DecayEnum>,
 
     #[param(
@@ -239,35 +276,72 @@ pub struct Pye4060Params {
     pub output_b: FloatParam,
 
     // --- Meters ---
+    /// Gain reduction, dB.
     #[meter]
     pub gr_meter_a: MeterSlot,
 
     #[meter]
     pub gr_meter_b: MeterSlot,
 
+    /// Output level with VU ballistics, linear (sine RMS-calibrated).
     #[meter]
     pub out_meter_a: MeterSlot,
 
     #[meter]
     pub out_meter_b: MeterSlot,
+
+    /// Output sample peak since the previous block, linear.
+    #[meter]
+    pub peak_meter_a: MeterSlot,
+
+    #[meter]
+    pub peak_meter_b: MeterSlot,
 }
 
 use Pye4060ParamsParamId as P;
 
 pub struct Pye4060;
 
+/// VU ballistics: full-wave average through two poles (~300 ms to 99 %),
+/// scaled to read sine RMS.
+#[derive(Clone, Copy, Debug, Default)]
+struct Vu {
+    s1: f64,
+    s2: f64,
+    k: f64,
+}
+
+impl Vu {
+    fn new(fs: f64) -> Self {
+        Self { s1: 0.0, s2: 0.0, k: biquad::tau_coeff(0.065, fs) }
+    }
+
+    #[inline(always)]
+    fn process(&mut self, x: f64) {
+        self.s1 += (x.abs() - self.s1) * self.k;
+        self.s2 += (self.s1 - self.s2) * self.k;
+    }
+
+    fn level(&self) -> f32 {
+        (self.s2 * (std::f64::consts::PI / 2.0) * std::f64::consts::FRAC_1_SQRT_2) as f32
+    }
+}
+
 pub struct Pye4060Dsp {
-    pub channels: [PyeChannel; 2],
-    pub sample_rate: f32,
+    engine: PyeEngine,
+    sample_rate: f64,
+    vu: [Vu; 2],
 }
 
 impl Default for Pye4060Dsp {
     fn default() -> Self {
-        Self {
-            channels: [PyeChannel::new(48000.0), PyeChannel::new(48000.0)],
-            sample_rate: 48000.0,
-        }
+        Self { engine: PyeEngine::new(48_000.0), sample_rate: 48_000.0, vu: [Vu::new(48_000.0); 2] }
     }
+}
+
+#[inline]
+fn db_to_lin(db: f64) -> f64 {
+    10f64.powf(db / 20.0)
 }
 
 impl PluginLogic for Pye4060 {
@@ -275,11 +349,13 @@ impl PluginLogic for Pye4060 {
     type DspState = Pye4060Dsp;
 
     fn reset(state: &mut Self::DspState, _params: &Self::Params, config: &AudioConfig) {
-        state.sample_rate = config.sample_rate as f32;
-        for ch in &mut state.channels {
-            ch.set_sample_rate(config.sample_rate as f32);
-            ch.reset();
+        if (config.sample_rate - state.sample_rate).abs() < 0.5 {
+            state.engine.reset();
+        } else {
+            state.engine = PyeEngine::new(config.sample_rate);
         }
+        state.sample_rate = config.sample_rate;
+        state.vu = [Vu::new(config.sample_rate); 2];
     }
 
     fn process(
@@ -290,8 +366,8 @@ impl PluginLogic for Pye4060 {
         context: &mut ProcessContext,
     ) -> ProcessStatus {
         let num_channels = buffer.channels();
+        let n = buffer.num_samples();
 
-        // Hard bypass path
         if params.bypass.value() {
             let n_in = buffer.num_input_channels();
             for ch in 0..num_channels {
@@ -302,166 +378,107 @@ impl PluginLogic for Pye4060 {
                     out.fill(0.0);
                 }
             }
+            // Keep the smoothers in step so un-bypassing does not glide.
+            for p in [&params.threshold_a, &params.threshold_b, &params.output_a, &params.output_b, &params.mix] {
+                let _ = p.read_after(n);
+            }
+            context.set_meter(P::GrMeterA, 0.0);
+            context.set_meter(P::GrMeterB, 0.0);
             return ProcessStatus::Normal;
         }
 
-        let mode = params.mode.value();
-        let link = params.link.value();
+        let fs_int = PyeEngine::internal_rate(state.sample_rate);
+        let routing = match params.mode.value() {
+            ProcessingMode::DualMono => Routing::DualMono,
+            ProcessingMode::Stereo => Routing::Stereo,
+            ProcessingMode::MidSide => Routing::MidSide,
+        };
+        let stereo = routing == Routing::Stereo;
         let analog = AnalogMode::from(params.analog.value());
 
-        // Channel A settings
-        let thresh_a = params.threshold_a.value();
+        // Switch settings: block rate. In stereo mode channel A's controls
+        // drive both programme chains.
         let ratio_a = PyeRatio::from(params.ratio_a.value());
         let decay_a = PyeDecay::from(params.decay_a.value());
-        let gate_th_a = params.gate_thresh_a.value();
-        let gate_at_a = params.gate_atten_a.value().to_db();
-        let out_a = params.output_a.value();
+        let (ratio_b, decay_b) = if stereo {
+            (ratio_a, decay_a)
+        } else {
+            (PyeRatio::from(params.ratio_b.value()), PyeDecay::from(params.decay_b.value()))
+        };
+        let coeffs = [ControlCoeffs::new(ratio_a, decay_a, fs_int), ControlCoeffs::new(ratio_b, decay_b, fs_int)];
+        let gate_th_a = db_to_lin(f64::from(params.gate_thresh_a.read_after(n)));
+        let gate_th_b = db_to_lin(f64::from(params.gate_thresh_b.read_after(n)));
+        let gate_at_a = db_to_lin(-params.gate_atten_a.value().to_db());
+        let gate_at_b = db_to_lin(-params.gate_atten_b.value().to_db());
+        let (gate_th_b, gate_at_b) = if stereo { (gate_th_a, gate_at_a) } else { (gate_th_b, gate_at_b) };
+        let sc = ScFilter::from(params.sc_filter.value());
+        state.engine.set_sc_filter([sc, sc]);
 
-        // Channel B settings (or linked to A in Stereo)
-        let (thresh_b, ratio_b, decay_b, gate_th_b, gate_at_b, out_b) = match mode {
-            ProcessingMode::Stereo => (thresh_a, ratio_a, decay_a, gate_th_a, gate_at_a, out_a),
-            ProcessingMode::DualMono | ProcessingMode::MidSide => {
-                if link {
-                    (
-                        thresh_a,
-                        ratio_a,
-                        decay_a,
-                        gate_th_a,
-                        gate_at_a,
-                        params.output_b.value(),
-                    )
-                } else {
-                    (
-                        params.threshold_b.value(),
-                        PyeRatio::from(params.ratio_b.value()),
-                        PyeDecay::from(params.decay_b.value()),
-                        params.gate_thresh_b.value(),
-                        params.gate_atten_b.value().to_db(),
-                        params.output_b.value(),
-                    )
-                }
-            }
+        let tick = |turnover: f64, gate_threshold: f64, gate_atten: f64| TickParams {
+            turnover,
+            gate_threshold,
+            gate_atten,
+            analog,
+        };
+        let mut fp = FrameParams {
+            routing,
+            link: params.link.value(),
+            tick: [tick(1.0, gate_th_a, gate_at_a), tick(1.0, gate_th_b, gate_at_b)],
+            coeffs,
+            output: [1.0, 1.0],
+            mix: 1.0,
         };
 
-        const INV_SQRT_2: f32 = 0.70710678;
+        let mut peak = [0.0f64; 2];
+        let engine = &mut state.engine;
+        let vu = &mut state.vu;
 
         if num_channels >= 2 {
             buffer.for_each_frame_io::<2, 2, _>(|frame_in, frame_out| {
-                let l_in = frame_in[0];
-                let r_in = frame_in[1];
+                let th_a = f64::from(params.threshold_a.read());
+                let th_b = f64::from(params.threshold_b.read());
+                let out_a = f64::from(params.output_a.read());
+                let out_b = f64::from(params.output_b.read());
+                let (th_b, out_b) = if stereo { (th_a, out_a) } else { (th_b, out_b) };
+                fp.tick[0].turnover = db_to_lin(th_a + TURNOVER_REF_DB);
+                fp.tick[1].turnover = db_to_lin(th_b + TURNOVER_REF_DB);
+                fp.output = [db_to_lin(out_a), db_to_lin(out_b)];
+                fp.mix = f64::from(params.mix.read());
 
-                match mode {
-                    ProcessingMode::DualMono => {
-                        let (sc_l, sc_r) = if link {
-                            let max_sc = l_in.abs().max(r_in.abs());
-                            (max_sc, max_sc)
-                        } else {
-                            (l_in, r_in)
-                        };
-
-                        frame_out[0] = state.channels[0].process_sample(
-                            l_in, sc_l, thresh_a, ratio_a, decay_a, gate_th_a, gate_at_a, out_a, analog,
-                        );
-                        frame_out[1] = state.channels[1].process_sample(
-                            r_in, sc_r, thresh_b, ratio_b, decay_b, gate_th_b, gate_at_b, out_b, analog,
-                        );
-                    }
-                    ProcessingMode::Stereo => {
-                        let max_sc = l_in.abs().max(r_in.abs());
-
-                        frame_out[0] = state.channels[0].process_sample(
-                            l_in, max_sc, thresh_a, ratio_a, decay_a, gate_th_a, gate_at_a, out_a, analog,
-                        );
-                        frame_out[1] = state.channels[1].process_sample(
-                            r_in, max_sc, thresh_a, ratio_a, decay_a, gate_th_a, gate_at_a, out_a, analog,
-                        );
-                    }
-                    ProcessingMode::MidSide => {
-                        // M/S Encode
-                        let mid = (l_in + r_in) * INV_SQRT_2;
-                        let side = (l_in - r_in) * INV_SQRT_2;
-
-                        let (sc_m, sc_s) = if link {
-                            let max_sc = mid.abs().max(side.abs());
-                            (max_sc, max_sc)
-                        } else {
-                            (mid, side)
-                        };
-
-                        let mid_out = state.channels[0].process_sample(
-                            mid, sc_m, thresh_a, ratio_a, decay_a, gate_th_a, gate_at_a, out_a, analog,
-                        );
-                        let side_out = state.channels[1].process_sample(
-                            side, sc_s, thresh_b, ratio_b, decay_b, gate_th_b, gate_at_b, out_b, analog,
-                        );
-
-                        // M/S Decode
-                        frame_out[0] = (mid_out + side_out) * INV_SQRT_2;
-                        frame_out[1] = (mid_out - side_out) * INV_SQRT_2;
-                    }
-                }
+                let (l, r) = engine.process_frame(f64::from(frame_in[0]), f64::from(frame_in[1]), &fp);
+                vu[0].process(l);
+                vu[1].process(r);
+                peak[0] = peak[0].max(l.abs());
+                peak[1] = peak[1].max(r.abs());
+                frame_out[0] = l as f32;
+                frame_out[1] = r as f32;
             });
         } else if num_channels == 1 {
+            let _ = (params.threshold_b.read_after(n), params.output_b.read_after(n));
             buffer.for_each_frame_io::<1, 1, _>(|frame_in, frame_out| {
-                let x = frame_in[0];
-                frame_out[0] = state.channels[0].process_sample(
-                    x, x, thresh_a, ratio_a, decay_a, gate_th_a, gate_at_a, out_a, analog,
-                );
+                fp.tick[0].turnover = db_to_lin(f64::from(params.threshold_a.read()) + TURNOVER_REF_DB);
+                fp.output[0] = db_to_lin(f64::from(params.output_a.read()));
+                fp.mix = f64::from(params.mix.read());
+                let y = engine.process_mono(f64::from(frame_in[0]), &fp);
+                vu[0].process(y);
+                peak[0] = peak[0].max(y.abs());
+                frame_out[0] = y as f32;
             });
         }
 
-        // Update meters
-        context.set_meter(P::GrMeterA, state.channels[0].meter_gr());
-        context.set_meter(P::OutMeterA, state.channels[0].meter_out());
-        context.set_meter(P::GrMeterB, state.channels[1].meter_gr());
-        context.set_meter(P::OutMeterB, state.channels[1].meter_out());
+        let gr = state.engine.take_gr_peak();
+        context.set_meter(P::GrMeterA, gr[0] as f32);
+        context.set_meter(P::GrMeterB, gr[1] as f32);
+        context.set_meter(P::OutMeterA, state.vu[0].level());
+        context.set_meter(P::OutMeterB, state.vu[1].level());
+        context.set_meter(P::PeakMeterA, peak[0] as f32);
+        context.set_meter(P::PeakMeterB, peak[1] as f32);
 
         ProcessStatus::Normal
     }
 
     fn editor(params: Arc<Pye4060Params>) -> Box<dyn Editor> {
-        // Ergonomic 19" rack-style side-by-side layout:
-        // Left: Channel A (cols 0..3)
-        // Center: Master & Routing (cols 4..5)
-        // Right: Channel B (cols 6..9)
-        // Exactly 2 rows high, with resizable(false) so the window height is strictly clamped.
-        GridLayout::build(vec![widgets(vec![
-            // --- Row 0: Channel A (Compression Dynamics) ---
-            knob(P::ThresholdA, "Thresh A").at(0, 0),
-            dropdown(P::RatioA, "Ratio A").at(1, 0),
-            dropdown(P::DecayA, "Decay A").at(2, 0),
-            meter(&[P::GrMeterA], "GR A").at(3, 0),
-
-            // --- Row 0: Master Section ---
-            dropdown(P::Mode, "Mode").at(4, 0),
-            toggle(P::Bypass, "Bypass").at(5, 0),
-
-            // --- Row 0: Channel B (Compression Dynamics) ---
-            knob(P::ThresholdB, "Thresh B").at(6, 0),
-            dropdown(P::RatioB, "Ratio B").at(7, 0),
-            dropdown(P::DecayB, "Decay B").at(8, 0),
-            meter(&[P::GrMeterB], "GR B").at(9, 0),
-
-            // --- Row 1: Channel A (Noise Gate & Output) ---
-            knob(P::GateThreshA, "Gate Th A").at(0, 1),
-            dropdown(P::GateAttenA, "Gate Att A").at(1, 1),
-            knob(P::OutputA, "Out A").at(2, 1),
-            meter(&[P::OutMeterA], "VU Out A").at(3, 1),
-
-            // --- Row 1: Master Section ---
-            toggle(P::Link, "Link A-B").at(4, 1),
-            dropdown(P::Analog, "Analog").at(5, 1),
-
-            // --- Row 1: Channel B (Noise Gate & Output) ---
-            knob(P::GateThreshB, "Gate Th B").at(6, 1),
-            dropdown(P::GateAttenB, "Gate Att B").at(7, 1),
-            knob(P::OutputB, "Out B").at(8, 1),
-            meter(&[P::OutMeterB], "VU Out B").at(9, 1),
-        ])])
-        .with_title("PYE TVT 84-4060")
-        .with_subtitle("PWM COMPRESSOR / LIMITER - DUAL MONO / STEREO / M-S")
-        .resizable(false)
-        .into_editor(&params)
+        editor::create(params)
     }
 }
 

@@ -1,149 +1,117 @@
-//! Monolithic Channel Strip for Pye TVT 84-4060 Compressor.
+//! One 4060 channel at the internal (oversampled) rate.
 //!
-//! Complete signal path:
-//! Input -> Input Transformer T1 -> PWM Chopper Gain Reduction (with Noise Gate)
-//!       -> 5-Pole LC Anti-Carrier Filter -> 2x Oversampled Output Saturation & Transformer T2
-//!       -> Makeup Gain -> Analog Hum -> Output
+//! ```text
+//! input --> T1 --> VT1 --+--> chopper VT2 --> LC filter --> VT3-VT5 --+--> output atten. --> VT6-VT9/T2 --> out
+//!                        |         ^                                  |    (+ gate pad)
+//!                        |         | mark:space                       |
+//!                        |     C23 / blocking osc. <-- ratio amp <-- bridge <-- T4
+//!                        +--> noise gate detector (pad on output attenuator)
+//! ```
 
-use crate::oversampler::Oversampler2x;
-use crate::pwm_chopper::{PwmChopper, PyeDecay, PyeRatio};
-use crate::transformer::{AnalogMode, TransformerStage};
+use crate::biquad::{Biquad, OnePole};
+use crate::noise_gate::NoiseGate;
+use crate::transformer::{AnalogMode, NoiseSource, OutputStage, ProgrammeChain};
 
-#[derive(Clone, Copy, Debug)]
-pub struct PyeChannel {
-    pub chopper: PwmChopper,
-    pub transformer: TransformerStage,
-    pub oversampler: Oversampler2x,
-    pub sample_rate: f32,
+/// Compression turnover (3:1, sine peak) sits 20 dB below the threshold
+/// dial reading in dBFS: dial 0 -> turnover at -20 dBFS peak.
+pub const TURNOVER_REF_DB: f64 = -20.0;
+/// Input-referred hiss of the programme chain, relative to the turnover.
+const HISS_PRE: f64 = 6.0e-4;
+/// Output stage hiss, dBFS-linear (~ -94 dBFS).
+const HISS_OUT: f64 = 2.0e-5;
 
-    // Metering ballistics
-    gr_peak: f32,
-    out_peak: f32,
+/// Modern addition: side-chain high-pass ahead of the bridge rectifier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScFilter {
+    Off,
+    Hz60,
+    Hz90,
+    Hz150,
 }
 
-impl Default for PyeChannel {
-    fn default() -> Self {
-        Self::new(48000.0)
+impl ScFilter {
+    fn corner(self) -> Option<f64> {
+        match self {
+            ScFilter::Off => None,
+            ScFilter::Hz60 => Some(60.0),
+            ScFilter::Hz90 => Some(90.0),
+            ScFilter::Hz150 => Some(150.0),
+        }
     }
 }
 
+/// Settings for one internal sample.
+#[derive(Clone, Copy, Debug)]
+pub struct TickParams {
+    /// Linear gain of the output attenuator (= turnover level, dBFS-linear).
+    pub turnover: f64,
+    pub gate_threshold: f64,
+    pub gate_atten: f64,
+    pub analog: AnalogMode,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PyeChannel {
+    fs: f64,
+    chain: ProgrammeChain,
+    output: OutputStage,
+    gate: NoiseGate,
+    t4_hp: OnePole,
+    sc_filter: ScFilter,
+    sc_hp: Biquad,
+    noise: NoiseSource,
+}
+
 impl PyeChannel {
-    pub fn new(sample_rate: f32) -> Self {
+    pub fn new(fs: f64, seed: u32) -> Self {
         Self {
-            chopper: PwmChopper::new(sample_rate),
-            transformer: TransformerStage::new(sample_rate),
-            oversampler: Oversampler2x::new(),
-            sample_rate,
-            gr_peak: 0.0,
-            out_peak: 0.0,
+            fs,
+            chain: ProgrammeChain::new(fs),
+            output: OutputStage::new(fs),
+            gate: NoiseGate::new(fs),
+            // T4 772201 side-chain transformer: small core, early LF roll-off.
+            t4_hp: OnePole::high_pass(18.0, fs),
+            sc_filter: ScFilter::Off,
+            sc_hp: Biquad::identity(),
+            noise: NoiseSource::new(seed),
         }
     }
 
     pub fn reset(&mut self) {
-        self.chopper.reset();
-        self.transformer.reset();
-        self.oversampler.reset();
-        self.gr_peak = 0.0;
-        self.out_peak = 0.0;
+        self.chain.reset();
+        self.output.reset();
+        self.gate.reset();
+        self.t4_hp.reset();
+        self.sc_hp.reset();
+        self.noise.reset();
     }
 
-    pub fn set_sample_rate(&mut self, sample_rate: f32) {
-        self.sample_rate = sample_rate.max(44100.0);
-        self.chopper.update_sample_rate(self.sample_rate);
-        self.transformer.update_sample_rate(self.sample_rate, self.sample_rate * 2.0);
-    }
-
-    /// Process a single audio sample through the complete Pye 4060 channel path.
-    ///
-    /// - `input_sample`: the audio sample to process
-    /// - `sidechain_sample`: the sidechain sample to feed the Germanium detector (can be linked)
-    /// - `threshold_db`: -24 to +16 dB
-    /// - `ratio`: 1:1, 2:1, 3:1, 5:1, Limit
-    /// - `decay`: 100ms, 200ms, 400ms, 800ms, 1600ms, 3200ms
-    /// - `gate_thresh_rel_db`: -50 to -20 dB
-    /// - `gate_atten_db`: 0 to 10 dB
-    /// - `output_db`: -18 to +18 dB
-    /// - `analog`: Off, 50Hz, 60Hz
-    #[inline(always)]
-    pub fn process_sample(
-        &mut self,
-        input_sample: f32,
-        sidechain_sample: f32,
-        threshold_db: f32,
-        ratio: PyeRatio,
-        decay: PyeDecay,
-        gate_thresh_rel_db: f32,
-        gate_atten_db: f32,
-        output_db: f32,
-        analog: AnalogMode,
-    ) -> f32 {
-        self.chopper.set_decay(decay);
-
-        // 1. Input Transformer T1 & Sidechain Transformer T4 conditioning
-        let x_t1 = self.transformer.process_input_transformer(input_sample);
-        let sc_t1 = self.transformer.process_sidechain_transformer(sidechain_sample);
-
-        // 2. PWM Chopper Attenuation (with Germanium detector and Noise Gate)
-        let (x_chopped, gr_db) = self.chopper.process(
-            x_t1,
-            sc_t1,
-            threshold_db,
-            ratio,
-            gate_thresh_rel_db,
-            gate_atten_db,
-        );
-
-        // Track peak Gain Reduction for metering
-        if gr_db > self.gr_peak {
-            self.gr_peak = gr_db;
-        } else {
-            self.gr_peak += 0.0005 * (gr_db - self.gr_peak);
+    pub fn set_sc_filter(&mut self, f: ScFilter) {
+        if f != self.sc_filter {
+            self.sc_filter = f;
+            self.sc_hp = match f.corner() {
+                Some(fc) => Biquad::high_pass(fc, std::f64::consts::FRAC_1_SQRT_2, self.fs),
+                None => Biquad::identity(),
+            };
         }
+    }
 
-        // 3. 5-Pole LC Anti-Carrier Filter (strips carrier above 18-20 kHz)
-        let x_lc = self.transformer.process_lc_filter(x_chopped);
+    /// Process one internal sample. `x` is the input in dBFS-linear units,
+    /// `gain` the chopper mark fraction. Returns (output, side-chain level).
+    #[inline(always)]
+    pub fn tick(&mut self, x: f64, gain: f64, p: &TickParams) -> (f64, f64) {
+        let analog = p.analog != AnalogMode::Off;
+        let u = self.chain.input(x / p.turnover);
+        let gate = self.gate.process(u, p.gate_threshold, p.gate_atten);
+        let hiss = if analog { HISS_PRE * self.noise.hiss() } else { 0.0 };
+        let s = self.chain.chop(u, gain, hiss);
 
-        // 4. Discrete Output Driver & Transformer T2 with 2x Oversampling
-        let (up0, up1) = self.oversampler.upsample2(x_lc);
-        let sat0 = self.transformer.process_output_saturation(up0);
-        let sat1 = self.transformer.process_output_saturation(up1);
-        let x_out = self.oversampler.downsample2(sat0, sat1);
+        let sc = self.sc_hp.process(self.t4_hp.process(s));
 
-        // 5. Output Makeup Gain
-        let makeup_lin = 10.0f32.powf(output_db / 20.0);
-        let mut y = x_out * makeup_lin;
-
-        // 6. Analog Power Supply Hum
-        let hum = self.transformer.generate_analog_hum(analog);
-        y += hum;
-
-        // Track peak output level for metering
-        let y_abs = y.abs();
-        if y_abs > self.out_peak {
-            self.out_peak = y_abs;
-        } else {
-            self.out_peak += 0.0003 * (y_abs - self.out_peak);
+        let mut y = self.output.process(s * p.turnover * gate);
+        if analog {
+            y += HISS_OUT * self.noise.hiss() + self.noise.hum(p.analog, self.fs);
         }
-
-        y
-    }
-
-    /// Read normalized Gain Reduction meter [0.0, 1.0], representing 0 to 20 dB GR
-    #[inline(always)]
-    pub fn meter_gr(&self) -> f32 {
-        (self.gr_peak / 20.0).clamp(0.0, 1.0)
-    }
-
-    /// Read normalized Output Level meter [0.0, 1.0] calibrated for VU (-20 to +6 dBVU)
-    #[inline(always)]
-    pub fn meter_out(&self) -> f32 {
-        let dbfs = if self.out_peak > 1e-5 {
-            20.0 * self.out_peak.log10()
-        } else {
-            -100.0
-        };
-        // 0 dBVU = -18 dBFS (+4 dBu). Range -20 dBVU (-38 dBFS) to +6 dBVU (-12 dBFS)
-        let dbvu = dbfs + 18.0;
-        ((dbvu + 20.0) / 26.0).clamp(0.0, 1.0)
+        (y, sc.abs())
     }
 }

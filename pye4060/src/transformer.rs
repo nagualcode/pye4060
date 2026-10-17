@@ -1,206 +1,230 @@
-//! Transformer & Discrete Transistor Stage Physics for Pye TVT 84-4060.
+//! Programme-chain analog stages of the Pye 4060 (circuit 845751/01).
 //!
-//! Models:
-//! - Input Transformer T1 771273A (LF phase rolloff & HF air resonance)
-//! - 5-Pole LC Low-Pass Filter (L1, L2 52.5mH, C5-C7 0.0033uF) stripping carrier above 18 kHz
-//! - Discrete Push-Pull Output Driver (VT9 2N4062, VT10 2N3053) & Output Transformer T2 772246
-//! - Authentic 1/f magnetic flux weighting and Class-A even-harmonic (H2) asymmetry
-//! - Defeatable British (50 Hz) and US (60 Hz) power-rail analog hum modeling
+//! Internal units: 1.0 = sine peak at the compression turnover for the
+//! dialled threshold. The threshold control is "a pair of opposed
+//! attenuators, one preceding the input amplifier and the other controlling
+//! the amount of feedback over the output amplifier" (BBC Ops Manual), so
+//! the chain between them always works relative to the turnover and the
+//! overall gain stays unity.
+//!
+//! - T1 771273A + coupling: low-frequency corner (the measured response
+//!   needs two ~11.8 Hz poles, one each side of the chopper).
+//! - VT1 BC113 input amplifier: single class-A stage, wide headroom.
+//! - LC anti-carrier filter (L1/L2 52.5 mH, C5-C7 3.3 nF) with T2: fitted
+//!   5-pole response plus the T2 leakage resonance near 10.7 kHz;
+//!   +0.45 dB at 10 kHz, -0.3 dB at 15 kHz, -6.7 dB at 18 kHz, -12 dB at
+//!   20 kHz, ~30 dB/octave beyond (manual: +0.5/-1 dB 30 Hz-15 kHz).
+//! - VT3/VT4/VT19 + VT5 post-chopper amplifier: class-A, dominant H2,
+//!   saturates about 21 dB above the turnover. It sits inside the threshold
+//!   control's feedback network, which keeps leaking signal around the
+//!   stage once it clips, so overload rounds off instead of hitting a wall.
+//! - VT6-VT9 push-pull driver into T2 772246: symmetric soft saturation and
+//!   low-frequency core flux at high output levels (rated +24 dBm).
 
-use crate::biquad::{Biquad, Coefficients};
+use crate::biquad::{Biquad, OnePole};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Post-chopper amplifier clip point, internal units (~ +21 dB).
+const POST_CLIP: f64 = 11.2;
+/// Signal passed around the clipped stage by its feedback network.
+const POST_LEAK: f64 = 0.12;
+/// Second-order coefficient of the post-chopper amplifier: H2 is -64 dB
+/// at the turnover and rises 1 dB per dB of level.
+const POST_H2: f64 = 0.0012;
+/// Input amplifier: tiny H2, and enough headroom that the chopper always
+/// gets to act first (no pre-chopper clipping is measurable up to +44 dB).
+const PRE_H2: f64 = 0.0001;
+const PRE_CLIP: f64 = 300.0;
+/// Output stage saturation onset, dBFS-linear (+24 dBm rated with
+/// 0 VU = +4 dBu = -18 dBFS puts the hard limit near +2 dBFS; the
+/// push-pull pair rounds off progressively above ~+4 dBFS).
+const OUT_SAT: f64 = 2.0;
+/// Chopper control feedthrough into the programme chain (switch drive
+/// coupling through VT2), relative to a full swing of the mark fraction.
+const FEEDTHROUGH: f64 = 0.004;
+
+/// Asymmetric soft clipper with a fairly hard knee (|x|^6 law).
+#[inline(always)]
+fn soft_clip(x: f64, pos: f64, neg: f64) -> f64 {
+    let c = if x >= 0.0 { pos } else { neg };
+    let r = x / c;
+    let r2 = r * r;
+    let r6 = r2 * r2 * r2;
+    if r2 < 0.04 {
+        // Far below the knee: first-order expansion, error < 1e-9.
+        return x * (1.0 - r6 / 6.0);
+    }
+    x / (1.0 + r6).powf(1.0 / 6.0)
+}
+
+/// Feedback amplifier: hard knee, plus the signal its feedback network
+/// leaks around the stage once it saturates.
+#[inline(always)]
+fn soft_clip_leaky(x: f64, pos: f64, neg: f64, leak: f64) -> f64 {
+    (1.0 - leak) * soft_clip(x, pos, neg) + leak * x
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ProgrammeChain {
+    t1_hp: OnePole,
+    lc_real: OnePole,
+    lc_pair1: Biquad,
+    lc_pair2: Biquad,
+    t2_peak: Biquad,
+    post_hp: OnePole,
+    last_gain: f64,
+}
+
+impl Default for ProgrammeChain {
+    fn default() -> Self {
+        Self::new(192_000.0)
+    }
+}
+
+impl ProgrammeChain {
+    pub fn new(fs: f64) -> Self {
+        Self {
+            t1_hp: OnePole::high_pass(11.54, fs),
+            lc_real: OnePole::low_pass_matched(33_041.0, fs),
+            lc_pair1: Biquad::low_pass_matched(9_005.0, 0.710, fs),
+            lc_pair2: Biquad::low_pass_matched(15_897.0, 3.074, fs),
+            t2_peak: Biquad::peaking(10_739.0, 1.0, 2.41, fs),
+            post_hp: OnePole::high_pass(11.54, fs),
+            last_gain: 1.0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.t1_hp.reset();
+        self.lc_real.reset();
+        self.lc_pair1.reset();
+        self.lc_pair2.reset();
+        self.t2_peak.reset();
+        self.post_hp.reset();
+        self.last_gain = 1.0;
+    }
+
+    /// T1 + input amplifier. Returns the signal arriving at the chopper.
+    #[inline(always)]
+    pub fn input(&mut self, u: f64) -> f64 {
+        let u = self.t1_hp.process(u);
+        soft_clip(u + PRE_H2 * u * u, PRE_CLIP, PRE_CLIP * 1.08)
+    }
+
+    /// Chopper, LC filter and post-chopper amplifier. `gain` is the mark
+    /// fraction for this sample; `noise` is input-referred hiss that the
+    /// chopper attenuates along with the programme.
+    #[inline(always)]
+    pub fn chop(&mut self, u: f64, gain: f64, noise: f64) -> f64 {
+        // Switch-drive feedthrough follows changes in the mark fraction;
+        // the coupling capacitors pass only the changes.
+        let ft = FEEDTHROUGH * (self.last_gain - gain);
+        self.last_gain = gain;
+        let s = (u + noise) * gain + ft;
+        let s = self.lc_pair2.process(self.lc_pair1.process(self.lc_real.process(s)));
+        let s = self.post_hp.process(self.t2_peak.process(s));
+        soft_clip_leaky(s + POST_H2 * s * s, POST_CLIP, POST_CLIP * 1.12, POST_LEAK)
+    }
+}
+
+/// VT6-VT9 push-pull pair and output transformer T2, at output level.
+#[derive(Clone, Copy, Debug)]
+pub struct OutputStage {
+    flux_lp: OnePole,
+    dc_hp: OnePole,
+}
+
+impl Default for OutputStage {
+    fn default() -> Self {
+        Self::new(192_000.0)
+    }
+}
+
+impl OutputStage {
+    pub fn new(fs: f64) -> Self {
+        Self { flux_lp: OnePole::low_pass(40.0, fs), dc_hp: OnePole::high_pass(2.0, fs) }
+    }
+
+    pub fn reset(&mut self) {
+        self.flux_lp.reset();
+        self.dc_hp.reset();
+    }
+
+    #[inline(always)]
+    pub fn process(&mut self, y: f64) -> f64 {
+        // Core flux is the integral of the winding voltage: only the low
+        // end builds enough of it to bend the B-H curve.
+        let flux = self.flux_lp.process(y);
+        let y = y - 0.01 * flux * flux * flux;
+        // Push-pull: symmetric rounding, a touch of imbalance for H2.
+        let y = soft_clip(y + 0.002 * y * y, OUT_SAT, OUT_SAT * 1.03);
+        self.dc_hp.process(y)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnalogMode {
     Off,
     Hz50,
     Hz60,
 }
 
+/// Power-supply hum and transistor hiss (PS2/49/1742 supply).
 #[derive(Clone, Copy, Debug)]
-pub struct TransformerStage {
-    sample_rate: f32,
-
-    // Input transformer T1 filters
-    t1_hp: Biquad,
-    t1_air: Biquad,
-
-    // Sidechain transformer T4 filters (completely isolated from audio path)
-    t4_hp: Biquad,
-    t4_air: Biquad,
-
-    // 5-Pole LC Low-Pass Filter
-    lc_stage1: Biquad,
-    lc_stage2: Biquad,
-    lc_pole_s: f32,
-    lc_pole_a: f32,
-
-    // Discrete output stage flux weighting
-    flux_pre: Biquad,
-    flux_post: Biquad,
-    dc_block: Biquad,
-
-    // Analog hum generator phase
-    hum_phase: f32,
+pub struct NoiseSource {
+    rng: u32,
+    phase: f64,
+    pink: [f64; 3],
 }
 
-impl Default for TransformerStage {
-    fn default() -> Self {
-        Self::new(48000.0)
-    }
-}
-
-impl TransformerStage {
-    pub fn new(sample_rate: f32) -> Self {
-        let mut s = Self {
-            sample_rate,
-            t1_hp: Biquad::default(),
-            t1_air: Biquad::default(),
-            t4_hp: Biquad::default(),
-            t4_air: Biquad::default(),
-            lc_stage1: Biquad::default(),
-            lc_stage2: Biquad::default(),
-            lc_pole_s: 0.0,
-            lc_pole_a: 0.0,
-            flux_pre: Biquad::default(),
-            flux_post: Biquad::default(),
-            dc_block: Biquad::default(),
-            hum_phase: 0.0,
-        };
-        s.update_sample_rate(sample_rate, sample_rate * 2.0);
-        s
+impl NoiseSource {
+    pub fn new(seed: u32) -> Self {
+        Self { rng: seed | 1, phase: 0.0, pink: [0.0; 3] }
     }
 
     pub fn reset(&mut self) {
-        self.t1_hp.reset();
-        self.t1_air.reset();
-        self.t4_hp.reset();
-        self.t4_air.reset();
-        self.lc_stage1.reset();
-        self.lc_stage2.reset();
-        self.lc_pole_s = 0.0;
-        self.flux_pre.reset();
-        self.flux_post.reset();
-        self.dc_block.reset();
-        self.hum_phase = 0.0;
+        self.phase = 0.0;
+        self.pink = [0.0; 3];
     }
 
-    pub fn update_sample_rate(&mut self, base_sr: f32, oversampled_sr: f32) {
-        let base_sr = base_sr.max(44100.0);
-        let over_sr = oversampled_sr.max(88200.0);
-        self.sample_rate = base_sr;
-
-        // T1 input transformer (base_sr):
-        // - Subsonic rolloff (-2.3 dB @ 20 Hz, -0.3 dB @ 50 Hz, -0.02 dB @ 100 Hz)
-        self.t1_hp = Biquad::new(Coefficients::low_shelf(30.0, -2.7, 0.707, base_sr));
-        // - Subtle 10 kHz transformer air lift (+0.4 dB)
-        self.t1_air = Biquad::new(Coefficients::peaking(9500.0, 0.45, 0.8, base_sr));
-
-        // T4 sidechain transformer (base_sr):
-        self.t4_hp = Biquad::new(Coefficients::low_shelf(30.0, -2.7, 0.707, base_sr));
-        self.t4_air = Biquad::new(Coefficients::peaking(9500.0, 0.45, 0.8, base_sr));
-
-        // 5-Pole LC Anti-Carrier Filter (base_sr):
-        // Conforms to Pye manual: +0.5 to -1.0 dB (30 Hz to 15 kHz) with sharp LC rolloff above 16 kHz
-        let fc1 = (18500.0f32).min(base_sr * 0.45);
-        let fc2 = (20500.0f32).min(base_sr * 0.47);
-        self.lc_stage1 = Biquad::new(Coefficients::low_pass(fc1, 0.707, base_sr));
-        self.lc_stage2 = Biquad::new(Coefficients::low_pass(fc2, 0.707, base_sr));
-
-        // 1st order pole at 21 kHz
-        let fc3 = (21000.0f32).min(base_sr * 0.48);
-        let w_pole = 2.0 * std::f32::consts::PI * fc3 / base_sr;
-        self.lc_pole_a = (-w_pole).exp();
-
-        // Output transformer T2 1/f flux weighting (oversampled_sr)
-        let flux_pre_coeffs = Coefficients::low_shelf(120.0, 2.5, 0.707, over_sr);
-        let flux_post_coeffs = flux_pre_coeffs.invert();
-        self.flux_pre = Biquad::new(flux_pre_coeffs);
-        self.flux_post = Biquad::new(flux_post_coeffs);
-
-        // Subsonic DC block (5 Hz, oversampled_sr)
-        self.dc_block = Biquad::new(Coefficients::high_pass(5.0, 0.707, over_sr));
-    }
-
-    /// Process input signal through Input Transformer T1 conditioning
     #[inline(always)]
-    pub fn process_input_transformer(&mut self, x: f32) -> f32 {
-        let y1 = self.t1_hp.process(x);
-        self.t1_air.process(y1)
+    fn white(&mut self) -> f64 {
+        // xorshift32, uniform in [-1, 1): flat spectrum, ~-4.8 dB RMS.
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.rng = x;
+        (x as f64 / 2_147_483_648.0) - 1.0
     }
 
-    /// Process sidechain signal through Sidechain Transformer T4 conditioning
+    /// Hiss with a little 1/f flicker at the low end, unit ~RMS.
     #[inline(always)]
-    pub fn process_sidechain_transformer(&mut self, x: f32) -> f32 {
-        let y1 = self.t4_hp.process(x);
-        self.t4_air.process(y1)
+    pub fn hiss(&mut self) -> f64 {
+        let w = self.white();
+        // Three-pole approximation of a gentle low-frequency rise.
+        self.pink[0] = 0.997 * self.pink[0] + 0.029 * w;
+        self.pink[1] = 0.985 * self.pink[1] + 0.032 * w;
+        self.pink[2] = 0.950 * self.pink[2] + 0.048 * w;
+        1.7 * w + self.pink[0] + self.pink[1] + self.pink[2]
     }
 
-    /// Process chopped signal through 5-Pole LC Low-Pass Filter
+    /// Mains hum at the output, dBFS-linear. A full-wave rectified supply
+    /// leaves mostly 2x mains ripple; the fundamental leaks magnetically
+    /// from the transformer.
     #[inline(always)]
-    pub fn process_lc_filter(&mut self, x: f32) -> f32 {
-        let y1 = self.lc_stage1.process(x);
-        let y2 = self.lc_stage2.process(y1);
-
-        // 1st order single pole
-        self.lc_pole_s = (1.0 - self.lc_pole_a) * y2 + self.lc_pole_a * self.lc_pole_s;
-        if self.lc_pole_s.abs() < 1e-25 {
-            self.lc_pole_s = 0.0;
+    pub fn hum(&mut self, mode: AnalogMode, fs: f64) -> f64 {
+        let (f0, amps) = match mode {
+            AnalogMode::Off => return 0.0,
+            // 50 Hz British mains: -92 / -86 / -98 / -94 dBFS.
+            AnalogMode::Hz50 => (50.0, [2.5e-5, 5.0e-5, 1.26e-5, 2.0e-5]),
+            // 60 Hz: the same supply runs a little quieter.
+            AnalogMode::Hz60 => (60.0, [1.8e-5, 4.0e-5, 1.0e-5, 1.4e-5]),
+        };
+        self.phase += std::f64::consts::TAU * f0 / fs;
+        if self.phase >= std::f64::consts::TAU {
+            self.phase -= std::f64::consts::TAU;
         }
-        self.lc_pole_s
-    }
-
-    /// Process through Discrete Class-AB Push-Pull Output Stage & Transformer T2
-    /// with authentic Class-A H2 asymmetry and magnetic flux compression
-    #[inline(always)]
-    pub fn process_output_saturation(&mut self, x: f32) -> f32 {
-        // Pre-emphasis: low frequencies undergo higher magnetic flux
-        let x_flux = self.flux_pre.process(x);
-
-        // Discrete transistor Class-AB / Class-A asymmetry non-linearity
-        // Generates dominant musical 2nd harmonic (H2) and subtle 3rd harmonic (H3)
-        const ALPHA_EVEN: f32 = 0.0055;
-        const BETA_ODD: f32 = 0.0018;
-
-        let abs_x = x_flux.abs();
-        let even_term = ALPHA_EVEN * (x_flux * x_flux) / (1.0 + abs_x);
-        let odd_term = BETA_ODD * (x_flux * x_flux * x_flux);
-        let y_sat = x_flux - even_term - odd_term;
-
-        // Post-emphasis: exact mathematical inverse restores flat frequency response
-        // at linear levels while preserving low-end saturation bloom at high levels
-        let y_post = self.flux_post.process(y_sat);
-
-        // Subsonic DC block removes any DC shift from the even-order rectification
-        self.dc_block.process(y_post)
-    }
-
-    /// Compute power supply analog hum sample
-    #[inline(always)]
-    pub fn generate_analog_hum(&mut self, mode: AnalogMode) -> f32 {
-        match mode {
-            AnalogMode::Off => 0.0,
-            AnalogMode::Hz50 => {
-                let f0 = 50.0;
-                let inc = 2.0 * std::f32::consts::PI * f0 / self.sample_rate;
-                self.hum_phase += inc;
-                if self.hum_phase >= 2.0 * std::f32::consts::PI {
-                    self.hum_phase -= 2.0 * std::f32::consts::PI;
-                }
-                // Fundamental + 2nd harmonic (100 Hz) + 3rd harmonic (150 Hz) at -86 dBFS
-                const HUM_AMP: f32 = 0.00005; // -86 dBFS
-                HUM_AMP * (self.hum_phase.sin() + 0.5 * (2.0 * self.hum_phase).sin() + 0.25 * (3.0 * self.hum_phase).sin())
-            }
-            AnalogMode::Hz60 => {
-                let f0 = 60.0;
-                let inc = 2.0 * std::f32::consts::PI * f0 / self.sample_rate;
-                self.hum_phase += inc;
-                if self.hum_phase >= 2.0 * std::f32::consts::PI {
-                    self.hum_phase -= 2.0 * std::f32::consts::PI;
-                }
-                // Fundamental + 2nd harmonic (120 Hz) + 3rd harmonic (180 Hz) at -86 dBFS
-                const HUM_AMP: f32 = 0.00005; // -86 dBFS
-                HUM_AMP * (self.hum_phase.sin() + 0.5 * (2.0 * self.hum_phase).sin() + 0.25 * (3.0 * self.hum_phase).sin())
-            }
-        }
+        let p = self.phase;
+        amps[0] * p.sin() + amps[1] * (2.0 * p + 0.6).sin() + amps[2] * (3.0 * p + 1.1).sin() + amps[3] * (4.0 * p + 2.3).sin()
     }
 }

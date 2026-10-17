@@ -1,6 +1,6 @@
 [package]
 name = "pye4060"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [lib]
@@ -30,11 +30,9 @@ rt-paranoid = ["truce/rt-paranoid"]
 
 [dependencies]
 truce = { version = "6.3" }
-# Lightweight types for layout / theme / widget descriptions.
-truce-gui-types = { version = "6.3" }
-# Built-in renderer. Plugins that supply their own editor (egui /
-# iced / slint) can drop this dep.
-truce-gui = { version = "6.3" }
+# Custom-painted egui editor (replaces the built-in truce-gui renderer).
+truce-egui = { version = "6.3" }
+egui = { version = "0.34" }
 truce-clap = { version = "6.3", optional = true }
 truce-vst3 = { version = "6.3", optional = true }
 truce-standalone = { version = "6.3", features = ["gui"], optional = true }

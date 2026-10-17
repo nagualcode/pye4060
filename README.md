@@ -1,211 +1,192 @@
-# Jardim Sonoro Pye 4060 — Classic PWM Compressor & Limiter
+# Jardim Sonoro Pye 4060 — PWM Compressor / Limiter
 
-[![Build](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
-[![Validation](https://img.shields.io/badge/pluginval-Strictness%20Level%205%20PASS-brightgreen.svg)]()
+[![Validation](https://img.shields.io/badge/pluginval-PASS-brightgreen.svg)]()
 [![Format](https://img.shields.io/badge/formats-CLAP%20%7C%20VST3-blue.svg)]()
-[![Architecture](https://img.shields.io/badge/architecture-Zero--Allocation%20DSP-orange.svg)]()
+[![Architecture](https://img.shields.io/badge/DSP-zero--allocation-orange.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-An ultra-faithful, component-level DSP reconstruction of the legendary **Pye TVT 84-4060 / 4060/01** solid-state dynamics processor. Developed originally in Cambridge, England by Pye TVT Limited for BBC broadcast transmission, the unit was immortalized in rock and roll history by legendary producer/engineer **Eddie Kramer** at London's **Olympic Sound Studios**, shaping the explosive drum and vocal sounds of **Jimi Hendrix**, **Led Zeppelin**, and **The Rolling Stones**.
+A component-level model of the **Pye TVT 4060 compression amplifier** (circuit 845751/01), the pulse-width-modulation compressor/limiter built in Cambridge for BBC and ITV studio desks and used by **Eddie Kramer** at Olympic Studios on Jimi Hendrix, Led Zeppelin and Rolling Stones sessions.
 
-Built in Rust using the modern [Truce Audio Framework](https://github.com/truce-audio/truce), this plugin combines deep forensic circuit analysis, original schematic extraction, and empirical measurement against vintage reference plugins to deliver an analog emulation with zero audio thread memory allocations and strict compliance with Steinberg's `pluginval` test harness.
+Written in Rust on the [Truce](https://github.com/truce-audio/truce) framework. The model is derived from the original 845751/01 schematic, the Pye instructions and maintenance manual (types 4060/01 and 4060/03) and the BBC Operations Manual pages, and is calibrated against black-box measurements of the Waves Kramer PIE (itself modelled on a unit at -18 dBFS = +4 dBu).
 
 ---
 
-## 📸 Interface Preview
+## 📸 Interface
 
 ![Pye 4060 UI](screenshot.png)
 
-*Ergonomic, strictly height-clamped 19" rack console layout featuring Dual Mono, Stereo, and Mid/Side (M/S) processing, authentic moving-coil Gain Reduction & VU meters, switched RC decay network, and the integrated broadcast Noise Gate (Type 845751/01).*
+Two channel modules laid out like the dual 4060 frame: the attenuation meter on top (Pye 0–24 dB scale, moving-coil ballistics), **NOISEGATE THRESHOLD** with the attenuation switch mounted concentrically inside it as on the hardware, the detented **THRESHOLD** dial, then **DECAY TIME ×100 ms** and **COMPRESSION RATIO**. The centre strip carries the dual frame's **LINK** toggle plus two modern additions, **MIX** and **SIDECHAIN HPF**. Flat dark styling, Pye-orange accents.
+
+Drag to adjust (Shift = fine, and frees the threshold from its 2 dB detents), double-click for default, mouse wheel steps, click a scale legend to jump to that switch position.
 
 ---
 
-## 🏛️ Engineering Rigor & Forensic Hardware Modeling
+## 🎸 Sound lineage
 
-Unlike modern compressors based on VCAs (THAT/dbx), optical photo-resistors (LA-2A), FETs (1176), or variable-mu tubes (Fairchild 660), the Pye TVT 84-4060 achieves dynamic gain reduction via **Pulse Width Modulation (PWM) Chopper Switching**.
+The 4060 was never a "studio compressor" product in the modern sense. It came out of a broadcast console programme, and its sound travelled from television studios into rock records.
 
-### 1. The PWM Chopper Attenuation Engine
-- **Carrier Oscillator:** A discrete blocking oscillator (`VT13 2N4062`, `VT14 2N4058`) generates ultra-high-frequency pulses at ~250 kHz (period $4\ \mu\text{s}$).
-- **Chopper Switch (`VT2 V405`):** Modulates the mark-to-space (duty cycle) ratio according to the rectified control voltage.
-- **Physical Attenuation Law:**
-  $$\text{Gain}(t) = \frac{T_{\text{open}}}{T_{\text{period}}} = D(t) = 10^{-\text{Atten}_{\text{dB}}(t) / 20}$$
-  - **At Threshold:** Switch is 100% open $\to$ 0 dB attenuation.
-  - **+6 dB above Threshold:** Switch is 50% open, 50% closed $\to$ removes 50% energy $\to$ 6 dB attenuation.
-  - **+12 dB above Threshold:** Switch is 25% open, 75% closed $\to$ removes 75% energy $\to$ 12 dB attenuation.
-- **Ultra-Fast Attack:** Because the chopper operates at 250 kHz, gain changes occur in sub-millisecond times (~0.8 ms), cleanly clamping transients and sibilants without transient click artifacts.
+1. **Pye TVT, Cambridge (c. 1960).** Pye's audio department under Bob Barrass designed a modular transistor mixing desk built from plug-in "cassettes". The 4060 compression amplifier was one of those cassettes. It is the part of that programme that outlived everything else.
+2. **ITV and BBC television (1960s).** ATV's four 34-channel desks at Elstree (from 1960–61) each carried four 4060s, and Tyne Tees had one in its 24-channel desk. The BBC specified the unit for the Pye desks in Television Centre studio TC1 (opened 1964) and the Television Theatre. Later versions (Pye 842678/00, BBC LF104) went into BBC DK4 and EMI desks, and the BBC Type D desk in TC8 used the original 4060 with the threshold set about 8 dB higher. BBC sound supervisor Mike McCarthy remembered the TC1 limiters for how they "scrunched up" audience applause: "very harsh sound, which was very popular at the time".
+3. **Olympic Studios, London (late 1960s).** Eddie Kramer has said almost everything he recorded there passed through Pye compressors: Jimi Hendrix, Led Zeppelin, the Rolling Stones. The units were popular enough that Neve built a replacement compressor in the same form factor.
+4. **Digital and boutique descendants.** Waves modelled a unit with Kramer as the Kramer PIE. Modern hardware such as the 500-series "Pynamic" PWM limiter (photos in `reference/pye_clone/`) keeps the PWM topology and adds mix, high-pass and attack controls.
+5. **This plugin** goes back to the circuit itself, the 845751/01 drawing (Issue 1, 12/6/68), and uses the Waves model only as a measuring stick.
 
-### 2. Germanium Bridge Rectifier & The Automatic +8 dB LIMIT Offset
-- **Detector Stage:** Sidechain transformer `T4 772201` drives a full-wave Germanium diode bridge (`OA47`). The low forward turn-on voltage (~0.25V) and smooth exponential conduction knee create musical, gradual threshold transitions.
-- **Automatic +8 dB Limit Turnover Shift:** In accordance with the original Pye manual (Section 2, Chapter 2):
-  > *"The turnover point in the limiting mode is automatically set 8 dB above the level indicated by the threshold control, so that limiting takes place correctly at the 100% modulation values, when the control is set to the incoming programme level (40% modulation)."*
-  In **Limit** mode, the ratio is locked at 20:1 and the threshold turnover shifts +8 dB higher, reproducing the exact hardware behavior verified against Audio Precision test curves.
-
-### 3. Switched RC Decay Network ($C_{23} = 22\ \mu\text{F}$)
-The release timing is governed by an authentic 6-position switched resistor array discharging capacitor $C_{23}$ ($22\ \mu\text{F}$):
-- `100 ms` ($R_{54} = 1.8\ \text{k}\Omega$)
-- `200 ms` ($R_{53} = 4.7\ \text{k}\Omega$)
-- `400 ms` ($R_{52} = 10\ \text{k}\Omega$ — Classic Olympic vocal/drum standard)
-- `800 ms` ($R_{51} = 22\ \text{k}\Omega$)
-- `1600 ms` ($R_{50} = 47\ \text{k}\Omega$)
-- `3200 ms` ($R_{49} = 120\ \text{k}\Omega$)
-
-### 4. Integrated Broadcast Noise Gate (Type 845751/01)
-*Omitted in legacy digital emulations such as Waves Kramer PIE, but faithfully restored here from original Pye schematics:*
-- **Operating Threshold:** Continuously variable from -20 dB to -50 dB below the compression threshold.
-- **Preset Attenuation:** Switched steps of 0 dB (Off), 2 dB, 4 dB, 6 dB, 8 dB, and 10 dB.
-- **Ballistics:** 250 ms hold/release into smooth downward expansion; rapid 1 ms attack when signal rises above threshold.
-
-### 5. 5-Pole LC Anti-Carrier Filter (`L1, L2 52.5mH`, `C5-C7 0.0033uF`)
-A discrete 5th-order LC low-pass filter strips the 250 kHz PWM carrier from the audio signal. Calibrated to factory tolerances (+0.5 to -1.0 dB from 30 Hz to 15 kHz) with progressive roll-off above 16 kHz (-6 dB at 18 kHz, -12 dB at 20 kHz).
-
-### 6. Discrete Push-Pull Output Driver & Class-A $H_2$ Asymmetry
-Driven by discrete bipolar transistors (`VT9 2N4062`, `VT10 2N3053`) into custom output transformer `T2 772246`:
-- **Magnetic Flux Weighting ($1/f$):** According to Faraday's law ($\Phi \propto V / \omega$), low frequencies force greater flux density through the transformer core. Bass saturates earlier while high frequencies stay pristine.
-- **Even-Harmonic ($H_2$) Asymmetry:** Discrete single-ended and push-pull bias points compress asymmetric half-cycles unequally:
-  $$y = x - \alpha_{\text{even}} \frac{x^2}{1 + |x|} - \beta_{\text{odd}} x^3$$
-  Producing authentic analog warmth with dominant 2nd harmonic ($H_2$) verified via stepped-sine analysis.
-- **Subsonic DC Blocking:** 5 Hz high-pass filter eliminates any DC drift from even-order rectification.
+A pair of original units was recently listed for about £14,000.
 
 ---
 
-## 🔄 Signal Processing Architecture
+## 🔎 Research process
 
-```
-                    ┌────────────────────────────────────────────────────────┐
-                    │               STEREO / M-S MATRIX ENCODER              │
-                    └───────────────────────────┬────────────────────────────┘
-                                                │
-                     [Left / Mid]               │               [Right / Side]
-                          │                     │                     │
-                          ▼                     │                     ▼
-              ┌───────────────────────┐         │         ┌───────────────────────┐
-              │  Input Transformer T1 │         │         │  Input Transformer T1 │
-              └───────────┬───────────┘         │         └───────────┬───────────┘
-                          │                     │                     │
-                          ▼                     │                     ▼
-        ┌───────────────────────────────────┐   │   ┌───────────────────────────────────┐
-        │        PWM CHOPPER ENGINE         │   │   │        PWM CHOPPER ENGINE         │
-        │  • Sidechain Transformer T4       │   │   │  • Sidechain Transformer T4       │
-        │  • Germanium OA47 Bridge Rectifier│◄──┼──►│  • Germanium OA47 Bridge Rectifier│
-        │  • Switched RC Decay (100-3200ms) │   │   │  • Switched RC Decay (100-3200ms) │
-        │  • +8 dB Limit Turnover Shift     │   │   │  • +8 dB Limit Turnover Shift     │
-        │  • Broadcast Noise Gate (0-10 dB) │   │   │  • Broadcast Noise Gate (0-10 dB) │
-        └─────────────────┬─────────────────┘   │   └─────────────────┬─────────────────┘
-                          │                     │                     │
-                          ▼                     │                     ▼
-              ┌───────────────────────┐         │         ┌───────────────────────┐
-              │ 5-Pole LC LP Filter   │         │         │ 5-Pole LC LP Filter   │
-              │ (Stripped 250kHz PWM) │         │         │ (Stripped 250kHz PWM) │
-              └───────────┬───────────┘         │         └───────────┬───────────┘
-                          │                     │                     │
-                          ▼                     │                     ▼
-              ┌───────────────────────┐         │         ┌───────────────────────┐
-              │ 2x Polyphase Halfband │         │         │ 2x Polyphase Halfband │
-              │ Oversampling Engine   │         │         │ Oversampling Engine   │
-              └───────────┬───────────┘         │         └───────────┬───────────┘
-                          │                     │                     │
-                          ▼                     │                     ▼
-              ┌───────────────────────┐         │         ┌───────────────────────┐
-              │ Output Transformer T2 │         │         │ Output Transformer T2 │
-              │ • 1/f Flux Weighting  │         │         │ • 1/f Flux Weighting  │
-              │ • Class-A H2 Saturation         │         │ • Class-A H2 Saturation
-              └───────────┬───────────┘         │         └───────────┬───────────┘
-                          │                     │                     │
-                          ▼                     │                     ▼
-              ┌───────────────────────┐         │         ┌───────────────────────┐
-              │ Makeup Gain (-18/+18) │         │         │ Makeup Gain (-18/+18) │
-              └───────────┬───────────┘         │         └───────────┬───────────┘
-                          │                     │                     │
-                          ▼                     │                     ▼
-                    ┌───────────────────────────┴────────────────────────────┐
-                    │               STEREO / M-S MATRIX DECODER              │
-                    └───────────────────────────┬────────────────────────────┘
-                                                │
-                                                ▼
-                                    Output [Left / Right]
-```
+Every behaviour in the plugin traces back to one of these sources (all in `reference/`):
+
+| Source | What it settled |
+|:---|:---|
+| **Circuit 845751/01 schematic** (Pye TVT, Issue 1, 12/6/68) | Topology: side chain taken *after* the chopper (feedback); component values for the LC filter (L1/L2 52.5 mH, C5–C7 3.3 nF), the C23 22 µF timing capacitor and its SWA decay ladder (R49–R54), the SWB2/SWB3 ratio resistor sets, the OA47 germanium bridge, the noise-gate board (FET pad R119–R122), and the LINK wiring (PL1 pins 6 and 10). |
+| **Instructions and Maintenance Manual**, types 4060/01 & 4060/03 | Compression and limiting curves (Fig. 2.2), the +8 dB limit turnover, the mark:space principle (Fig. 2.3), the block diagram (Fig. 2.4), waveform distortion with short decay times (Fig. 2.5), noise-gate timing, and the spec: +0.5/−1 dB 30 Hz–15 kHz, ±24 dBm. |
+| **BBC Operations Manual** pages (John Eden-Eadon, revised 1971, in `history.pdf`) | 250 kHz chopper with a 4 µs period; threshold as "a pair of opposed attenuators"; attack under 0.5 ms (compression) and 1 ms ± 0.5 (limit); 2 dB threshold steps over 40 dB. |
+| **Photos of a dual frame** with PS2/49/1742 supply | Front-panel layout, the concentric noise-gate controls, the meter's non-linear 0–24 dB scale, and the LINK toggle between the modules. |
+| **Waves Kramer PIE manual** and plugin | Calibration level (−18 dBFS = +4 dBu), hum/noise behaviour, and measured data (next section). |
+
+Process:
+1. **Read the circuit.** We traced the schematic stage by stage and found that the side chain is a feedback loop, not the feedforward detector of v0.1.0. That changed the whole DSP architecture.
+2. **Measure the reference.** We characterized the Waves model as a black box (below) to get numbers that documents don't give: time constants, curve shapes, distortion spectra.
+3. **Find the mechanism that explains the data.** Candidate physical models were prototyped in Python and fitted, and a model was kept only when it explained several measurements at once. Example: the hyperbolic chopper gain law `g = 1/(1+V)` fits every recovery curve with one time constant per decay position, at any depth.
+4. **Port to Rust and re-measure** the built plugin with the same harness, side by side with the reference, until the curves agree or there is a documented reason to differ.
+5. **Fill gaps from comparable vintage gear**, only where neither documents nor measurements decide: the class-A amplifier's H2 balance and the output transformer's core flux.
 
 ---
 
-## 🔬 Empirical Validation Suite
+## 🧪 Reverse engineering the reference
 
-An automated, phase-independent stepped-sine measurement suite (`tools/test_full.py`) verifies our DSP model against Waves Kramer PIE Stereo and factory specifications across 8 critical tests:
+The Waves Kramer PIE was analysed as a **black box**, through measurement only. It was not disassembled or decompiled. `tools/compare_waves.py` loads it with [pedalboard](https://github.com/spotify/pedalboard) and runs the same stimuli through both plugins:
 
-| Test ID | Description | Benchmark / Spec | Result |
-|:---:|:---|:---|:---:|
-| **Test 1** | **Hard Bypass Passthrough** | Max error $< 10^{-6}$ | **0.00e+00** (PASS) |
-| **Test 2** | **Frequency Response Sweep** | +0.5 to -1.0 dB (30 Hz - 15 kHz); 5-pole LC roll-off | **±0.02 dB at 1kHz** (PASS) |
-| **Test 3** | **Static Compression Curves** | 1:1, 2:1, 3:1, 5:1, Limit across -40 to +2 dBFS | **Matched** (PASS) |
-| **Test 4** | **+8 dB Limit Turnover Offset** | +8 dB turnover elevation in Limit mode | **Confirmed** (PASS) |
-| **Test 5** | **Switched Decay Ballistics** | Monotonic recovery across 100ms - 3200ms | **Verified** (PASS) |
-| **Test 6** | **Harmonic Spectrum Analysis** | Dominant 2nd harmonic ($H_2 > H_3$) Class-A warmth | **THD 0.20%, $H_2 \gg H_3$** (PASS) |
-| **Test 7** | **Multi-Channel & M/S Routing** | Dual Mono isolation + M/S zero leakage | **0.00e+00 leakage** (PASS) |
-| **Test 8** | **Integrated Noise Gate** | Exact 6.00 dB attenuation with 250ms hold/release | **6.00 dB steady state** (PASS) |
+- **Frequency response** with stepped sines at 44.1 and 96 kHz. The roll-off is identical at both rates (−33 dB at 30 kHz, −43 dB at 40 kHz, about 30 dB/octave), so it is a modelled 5-pole analog filter, not an anti-alias artefact. A symmetric ideal LC ladder could not reproduce it; a fitted 5-pole response plus a T2 resonance does (±0.13 dB).
+- **Static curves** in 1 dB steps for each ratio and threshold. They show the linear threshold map (turnover = dial − 20 dBFS peak), the 8.2 dB limit offset, a hard knee, about 25:1 in limit, and attenuation saturating near 21.4 dB.
+- **Attack.** A step was analysed per half-cycle. It is fast at first and then creeps toward the final value, with overshoot in limit, which is typical of a feedback loop.
+- **Release.** Recovery curves were taken at two depths for each decay position. The hyperbolic law fits all of them at 0.07 dB RMS. They yield the fitted C23 time constants of 53, 96, 155, 327, 785 and 1685 ms.
+- **Distortion vs. decay, frequency and level.** The H3-dominant, decay-dependent distortion identified control-voltage ripple as the main harmonic mechanism. A 1:1 drive sweep located the clipping after the chopper, about 21 dB over the turnover.
+- **Detector and noise.** Stereo detection is max-linked. Hum and noise spectra were checked per mains setting.
 
-### Steinberg Pluginval Compliance
-Validated under Steinberg's official test harness at **Strictness Level 5**:
-```bash
-cargo truce validate --pluginval
-# pluginval (VST3)
-#   Pye4060 ... PASS
-# All validations passed.
+The reference informed calibration. The architecture comes from the schematic. Where the two disagree, the hardware documents win; the departures are listed under *Measured against the reference*.
+
+---
+
+## 🏛️ How the model works
+
+### 1. A feedback compressor
+The schematic and the manual's block diagram (Fig. 2.4) put the side chain **after** the chopper, LC filter and amplifier: T4 (772201) → OA47 bridge (MR4–7) → ratio amplifier (VT15/VT16, SWB2/SWB3) → C23 22 µF (charged by VT13/VT14, discharged by the SWA decay resistors) → blocking oscillator T3 → VT2 V405 shunt switch. The plugin runs that loop sample by sample at the oversampled rate, so the compressor reacts to its own output, as the hardware does.
+
+### 2. The PWM chopper and its gain law
+The 250 kHz chopper is modelled by its mark:space average (the carrier itself is ~120 dB down after the 5-pole filter and inaudible). The gain law is hyperbolic in the C23 voltage, `g = 1 / (1 + V)`. With an exponential RC discharge this reproduces the measured recovery shape — near-linear in dB while deep, an exponential tail near unity — to **0.07 dB RMS at every depth with a single time constant**; a dB-domain law does not.
+
+The ratio amplifier is a power law of the rectified output, `V = (|out| / turnover)^(ratio−1) − 1`, which inside the loop yields exactly the constant ratios of manual Fig. 2.2. Attenuation tops out softly near 21.5 dB (minimum pulse width).
+
+### 3. Program-dependent distortion — the "scrunch"
+Because the gain is applied inside the loop, C23 ripples between waveform peaks and modulates the audio at audio rate (manual Fig. 2.5). That gives the 4060 its odd-order signature, rising at low frequencies and with short decay settings — the sound BBC engineers described as "squeench". This emerges from the circuit model; it is not a distortion curve added on top.
+
+### 4. Threshold as opposed attenuators
+"The threshold control operating as a pair of opposed attenuators, one preceding the input amplifier and the other controlling the amount of feedback over the output amplifier" (BBC Ops Manual). Gain stays unity, but the amplifiers work relative to the turnover: low thresholds drive the post-chopper amplifier harder (H2, then soft clipping about 21 dB over the turnover), and input-referred hiss rises with the threshold setting and breathes with the gain reduction. Dial 0 puts the turnover at −20 dBFS sine peak; **Limit** moves it 8 dB up ("so that limiting takes place correctly at the 100 % modulation values").
+
+### 5. Time constants
+- **Attack** (fixed, as on the unit): C23 charges through a current-limited stage. Compression reaches 63 % in < 0.5 ms and limiting in ≈ 1 ms, per the BBC spec sheet ("Compression less than 0.5 m.secs. Limit 1 m.sec. ±0.5"). Fast transients overshoot before the loop catches them, as in Fig. 2.5.
+- **Decay**: the panel's 1–32 ×100 ms are nominal recovery times. The C23 discharge constants are fitted to the reference unit's recovery curves: 53, 96, 155, 327, 785 and 1685 ms.
+
+### 6. Filters and transformers
+The LC anti-carrier filter (L1/L2 52.5 mH, C5–C7 3.3 nF) together with T1/T2 is a fitted 5-pole response plus the T2 leakage resonance: +0.45 dB at 10 kHz, −0.3 dB at 15 kHz, −6.7 dB at 18 kHz, −12 dB at 20 kHz, ~30 dB/octave beyond, and an 11.5 Hz two-pole low end — inside the manual's +0.5/−1 dB (30 Hz–15 kHz). The high-Q sections use magnitude-matched designs (Vicanek) so the response holds at every sample rate. The output stage (VT6–VT9 into T2) adds low-frequency core flux and push-pull rounding at high output levels.
+
+### 7. Noise gate (845751/01 gate board)
+Senses the programme after the input amplifier, so its −20…−50 dB threshold is relative to the compression threshold. Below threshold for more than 250 ms it fades in the selected 2–10 dB pad with a 250 ms time constant; it opens again in under 1 ms (manual ch. 1).
+
+### 8. Routing and LINK
+**Dual Mono**, **Stereo** (one detector, channel A's controls drive both) and **M/S**. **LINK** behaves like the dual frame's switch, which joins PL1 pins 6 and 10 of both units: the two C23 control voltages are paralleled, so both channels share one gain while keeping their own knobs.
+
+### 9. Analog
+Off (digital silence in, silence out), or 50/60 Hz: rectifier ripple and transformer hum plus transistor hiss.
+
+### Signal flow (per channel, at 176.4–192 kHz)
 ```
+in ─▶ T1 ─▶ VT1 input amp ─┬─▶ chopper VT2 ─▶ LC filter + T2 ─▶ VT3–VT5 amp ─┬─▶ output atten. ─▶ VT6–VT9 / T2 ─▶ out
+   (threshold attenuator)  │        ▲  mark:space                           │   (+ gate pad)
+                           │        └── C23 / blocking osc ◀── ratio amp ◀── OA47 bridge ◀── T4 (+ SC HPF)
+                           └─▶ noise gate detector
+```
+Oversampling is 4× at 44.1/48 kHz and 2× at 88.2/96 kHz with polyphase elliptic half-band filters (≈100 dB alias rejection, flat to 20.2 kHz). No latency is reported or needed. CPU: about 1 % of one core for a stereo instance at 48 kHz.
+
+---
+
+## 🔬 Measured against the reference
+
+`tools/compare_waves.py` drives this plugin and the Waves Kramer PIE (Mono) with identical stimuli. Representative results (1 kHz sine, threshold 0):
+
+| Measurement | Pye4060 | Waves PIE | Notes |
+|:---|:---:|:---:|:---|
+| Frequency response, 30 Hz – 20 kHz | 15k −0.25, 18k −6.7, 20k −12.5 dB | 15k −0.30, 18k −6.7, 20k −12.4 dB | within ±0.3 dB of the reference throughout |
+| GR, 3:1, +6 dBFS in | 16.9 dB | 16.9 dB | 5:1 and Limit within ~0.3 dB from turnover to +6 dBFS |
+| GR at −10 dBFS, threshold −16 / −8 / 0 / +8 | 16.9 / 11.8 / 6.5 / 1.2 dB | 16.9 / 11.9 / 6.8 / 1.3 dB | threshold mapping |
+| Recovery, 3:1, 400 ms position, 100/200/400 ms after release | 11.6 / 7.9 / 3.0 dB | 11.0 / 7.4 / 2.8 dB | same shape at every decay position |
+| H3, 3:1, 15 dB GR, 100 ms decay — 1 kHz / 100 Hz / 50 Hz | −56 / −37 / −33 dB | −56 / −37 / −34 dB | loop-ripple distortion |
+| H3, 3:1, 15 dB GR, 3.2 s decay, 1 kHz | −86 dB | −84 dB | |
+
+Where the model deliberately departs from the reference:
+- **2:1 turnover**: the reference measures its 2:1 knee ~2.6 dB above 3:1. The model follows the manual's Fig. 2.2, where all ratios share the threshold point.
+- **Attack**: faster than the reference, to meet the BBC attack specification.
+- **H2**: one physically placed class-A nonlinearity for every mode. The reference has almost no H2 under compression (≈ −65 dB) but plenty in 1:1; the model sits at ≈ −52 dB under heavy compression and somewhat cleaner than the reference in 1:1.
+
+### Tests
+- `cargo test --release --lib`: 14 unit tests — static ratios, +8 dB limit turnover, BBC attack spec, maximum attenuation, filter accuracy, oversampler flatness and alias rejection, unity gain below threshold, digital silence, M/S isolation, LINK behaviour, noise-gate timing.
+- `tools/test_full.py`: end-to-end checks on the installed VST3 (bypass, curves, limit offset, decay ordering, harmonics, routing, gate).
+- `cargo truce validate --pluginval`: VST3 passes.
 
 ---
 
 ## 📦 Installation & Quickstart
 
+### Download (macOS, Apple Silicon)
+Grab `Pye4060-v0.2.0-macOS-arm64.zip` from [Releases](https://github.com/nagualcode/pye4060/releases), then:
+```bash
+unzip Pye4060-v0.2.0-macOS-arm64.zip
+cd Pye4060-v0.2.0-macOS-arm64
+cp -R Pye4060.vst3 ~/Library/Audio/Plug-Ins/VST3/
+cp -R Pye4060.clap ~/Library/Audio/Plug-Ins/CLAP/
+# The bundles are ad-hoc signed, not notarised: clear the download quarantine.
+xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/Pye4060.vst3 ~/Library/Audio/Plug-Ins/CLAP/Pye4060.clap
+```
+Intel Macs and other platforms: build from source.
+
 ### Prerequisites
-- [Rust & Cargo](https://rustup.rs/) (v1.85+ recommended)
+- [Rust & Cargo](https://rustup.rs/) (1.92+)
 - [Truce CLI](https://github.com/truce-audio/truce) (`cargo install cargo-truce`)
 
-### Compile and Install to User Plugin Directory
+### Build and install
 ```bash
-# Clone the repository
 git clone https://github.com/nagualcode/pye4060.git
 cd pye4060/pye4060
-
-# Build release bundles (CLAP + VST3)
-cargo truce build
-
-# Install directly to macOS user audio plug-in folders
-# (~/Library/Audio/Plug-Ins/VST3/ and ~/Library/Audio/Plug-Ins/CLAP/)
-cargo truce install
+cargo truce build      # CLAP + VST3 (+ standalone)
+cargo truce install    # ~/Library/Audio/Plug-Ins/{VST3,CLAP}
 ```
-
-In your DAW (Ableton Live, Reaper, Logic Pro, Cubase, Studio One, Bitwig, Pro Tools), the plugin will appear under vendor **Jardim Sonoro** in the **Dynamics** category:
-- **Display Name:** `Pye4060`
-- **Vendor:** `Jardim Sonoro`
-- **Formats:** VST3, CLAP, Standalone
+The plugin appears under vendor **Jardim Sonoro**, category **Dynamics**, as `Pye4060`.
 
 ---
 
 ## 🎛️ Control Reference
 
-### Master Section
-- **Processing Mode:**
-  - `Dual Mono`: Completely independent Channel A (Left) and Channel B (Right) strips.
-  - `Stereo`: Channel A controls both channels synchronously with linked sidechain detection.
-  - `M/S`: Channel A processes Mid ($M = (L+R)/\sqrt{2}$), Channel B processes Side ($S = (L-R)/\sqrt{2}$).
-- **Link A-B:** Links parameter adjustments and couples sidechains between channels.
-- **Analog Hum:** Selectable `Off`, `50 Hz` (authentic British broadcast mains), or `60 Hz` (US/Olympic export mains) modeled at -86 dBFS.
-- **Bypass:** Bit-clean, zero-latency wire bypass.
+### Master
+- **Mode**: `Dual Mono` (independent A = left, B = right), `Stereo` (one detector; channel A's controls drive both), `M/S` (A = mid, B = side; M = (L+R)/√2, S = (L−R)/√2).
+- **Link**: joins the two C23 control voltages (Dual Mono / M/S). Always shared in Stereo.
+- **Analog**: `Off`, `50 Hz`, `60 Hz` — hum and hiss.
+- **Bypass**: bit-exact wire.
+- **Mix** *(modern)*: wet/dry blend for parallel compression; the dry path runs through matching resampling filters so the blend stays phase-coherent.
+- **Sidechain HPF** *(modern)*: Off / 60 / 90 / 150 Hz high-pass ahead of the bridge rectifier, to keep low end from driving the gain.
 
-### Channel Strips (A & B)
-- **Threshold:** Input dynamics reference point (-24 dB to +16 dB in 2 dB steps, continuous interpolating).
-- **Ratio:** 5-position switch:
-  - `1:1`: Linear calibration / passthrough.
-  - `2:1`: Gentle bus leveling.
-  - `3:1`: Classic Olympic rock drum and vocal compression.
-  - `5:1`: Punchy limiting / bus compression.
-  - `Limit`: Brickwall limiter with 20:1 ratio and automatic **+8 dB turnover offset**.
-- **Decay Time:** Switched 6-position release time constants: `100 ms`, `200 ms`, `400 ms`, `800 ms`, `1600 ms`, `3200 ms`.
-- **Noise Gate Threshold:** -50 dB to -20 dB relative to compression threshold.
-- **Noise Gate Attenuation:** Switched preset attenuation: `0 dB (Off)`, `2 dB`, `4 dB`, `6 dB`, `8 dB`, `10 dB`.
-- **Output Gain:** Linear makeup gain (-18 dB to +18 dB).
-- **Meters:**
-  - `GR`: Moving-coil meter indicating instantaneous and peak-smoothed Gain Reduction (0 to 20 dB).
-  - `VU Out`: Calibrated output level meter (-20 dBVU to +6 dBVU, where 0 dBVU = -18 dBFS).
+### Channel (A and B)
+- **Threshold**: −24 … +16 in 2 dB detents (Shift-drag for in-between values). 0 = the unit's normal operating position.
+- **Ratio**: `1:1` (side chain off, for line-up), `2:1`, `3:1`, `5:1`, `Limit` (≈25:1, turnover +8 dB).
+- **Decay**: 1, 2, 4, 8, 16, 32 ×100 ms.
+- **Noisegate threshold**: −50 … −20 dB relative to the compression threshold. **Attenuation**: 0 (off), 2, 4, 6, 8, 10 dB.
+- **Output** *(plugin trim)*: −18 … +18 dB, after the hardware chain.
+- **Meters**: attenuation (Pye 0–24 dB scale, needle with peak marker) and output level (VU ballistics, sample-peak tick, clip LED; green to −18 dBFS = 0 VU).
+
+Defaults follow the hardware's normal position: Stereo, threshold 0, 3:1, decay 4 (×100 ms).
 
 ---
 
@@ -239,14 +220,11 @@ The plugin includes an authentic factory preset library organized by instrument 
 
 ---
 
-## 📋 Roadmap & Future Improvements (ToDo)
-- [ ] **External Sidechain (Sidechain Input):** Expose auxiliary sidechain bus in VST3/CLAP for external ducking and sidechain keying.
-- [ ] **Custom Skeuomorphic GUI Skin:** Vintage hammertone grey faceplate, Marconi-style knurled pointer knobs, and animated moving-coil meter needle.
-- [ ] **High-Pass Sidechain Filter (HP SC):** Optional selectable 80 Hz / 120 Hz sidechain low-cut filter for modern low-end bass management on drum buses.
-- [ ] **Mix / Wet-Dry Blend Knob:** Integrated parallel compression control for NY-style parallel smashing directly within the plugin.
-- [ ] **AU v2 / AU v3 Apple Component Packaging:** Sign and notarize `.component` and `.appex` bundles for Logic Pro and iOS.
-
----
+## 📋 Roadmap
+- [ ] **External sidechain input** (VST3/CLAP auxiliary bus) for keying and ducking.
+- [ ] **AU v2 / AU v3** packaging, signed and notarised.
+- [ ] **Measure a real 4060**: the decay constants, H2 balance and 2:1 knee are calibrated against the Waves model; impulse, stepped-sine and recovery captures of a physical unit would settle them.
+- [ ] **CLAP validation** with clap-validator in CI.
 
 ## 📄 License
 

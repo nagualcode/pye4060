@@ -145,7 +145,7 @@ def get_additional_presets():
             "comment": "Subtle 2:1 Mid/Side cohesion with independent timing on Mid and Side channels",
             "tags": ["mastering", "glue", "m-s", "bus"],
             "mode": 2,  # M/S
-            "link": 1,
+            "link": 0,  # LINK joins the C23 control voltages; M and S stay independent here
             "analog": 0,  # Off
             "bypass": 0,
             "thresh_a": -4.0,

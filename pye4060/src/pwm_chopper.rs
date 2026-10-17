@@ -1,15 +1,40 @@
-//! Pulse Width Modulation (PWM) Chopper Gain Reduction Engine for Pye TVT 84-4060.
+//! Side chain and PWM chopper gain law of the Pye 4060 (circuit 845751/01).
 //!
-//! Faithful component-level emulation of:
-//! - High-frequency blocking oscillator mark-to-space chopper switch (VT2 V405)
-//! - Germanium diode full-wave bridge rectifier (OA47) with exponential soft knee
-//! - Switched 6-position RC decay constants (100ms - 3200ms) with 22uF timing capacitor
-//! - Automatic +8 dB threshold turnover shift in LIMIT mode
-//! - Integrated broadcast Noise Gate (Type 845751/01) with 250ms hold/release and 1ms attack
+//! The 4060 is a *feedback* compressor (manual Fig. 2.4, BBC diagram 2): the
+//! side chain samples the programme chain after the chopper, LC filter and
+//! amplifier, so the control loop reacts to its own output.
+//!
+//! ```text
+//!  post-chopper signal -> T4 772201 -> OA47 bridge (MR4-7, full wave)
+//!     -> ratio amplifier VT15/VT16 (SWB2/SWB3 resistor sets)
+//!     -> C23 22 uF, charged by VT13/VT14, discharged by SWA (R49-R54)
+//!     -> VT12 / blocking oscillator T3 -> 250 kHz mark:space pulse
+//!     -> VT2 V405 shunt switch: audio passes for the "mark" fraction
+//! ```
+//!
+//! Model, in terms of the normalised C23 voltage `V`:
+//! - Chopper gain is hyperbolic, `g = 1 / (1 + V)`, i.e. the mark:space
+//!   ratio shrinks as the control voltage rises. With an exponential RC
+//!   discharge this law reproduces the measured recovery shape (near-linear
+//!   in dB while deep, exponential tail near unity) to 0.07 dB RMS at every
+//!   depth with a single time constant, where a dB-domain law does not.
+//! - The ratio amplifier produces a power law of the rectified output,
+//!   `V_target = (|s| / turnover)^n - 1`, n = ratio - 1. In the loop this
+//!   gives exactly 20 log10(1 + V) = n (L_out - L_turnover), the constant
+//!   compression ratios of manual Fig. 2.2.
+//! - C23 charges through a transistor stage: proportional (tau_a) with a
+//!   current limit (slew), and discharges through the decay resistor.
+//! - The blocking oscillator has a minimum pulse width: attenuation tops out
+//!   around 21.5 dB, approached softly.
+//!
+//! Because the gain is applied inside the loop, ripple on C23 between
+//! waveform peaks modulates the audio at audio rate. That is the 4060's
+//! harmonic signature (manual Fig. 2.5): odd-order, rising at low
+//! frequencies and with short decay settings.
 
 #![allow(dead_code)]
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PyeRatio {
     Ratio1_1,
     Ratio2_1,
@@ -19,24 +44,36 @@ pub enum PyeRatio {
 }
 
 impl PyeRatio {
-    #[inline(always)]
-    pub fn slope(&self) -> f32 {
+    /// Exponent of the ratio amplifier (compression ratio minus one).
+    /// Limit: the manual specifies "greater than 20:1"; 25:1 matches the
+    /// measured limiting slope.
+    #[inline]
+    pub fn exponent(self) -> f64 {
         match self {
             PyeRatio::Ratio1_1 => 0.0,
-            PyeRatio::Ratio2_1 => 0.50,       // 1 - 1/2
-            PyeRatio::Ratio3_1 => 0.6666667,  // 1 - 1/3
-            PyeRatio::Ratio5_1 => 0.80,       // 1 - 1/5
-            PyeRatio::Limit => 0.95,          // 1 - 1/20 (Limiter action)
+            PyeRatio::Ratio2_1 => 1.0,
+            PyeRatio::Ratio3_1 => 2.0,
+            PyeRatio::Ratio5_1 => 4.0,
+            PyeRatio::Limit => 24.0,
         }
     }
 
-    #[inline(always)]
-    pub fn is_limit(&self) -> bool {
-        matches!(self, PyeRatio::Limit)
+    /// Turnover relative to the threshold dial. In the limit position the
+    /// turnover is "automatically set 8 dB above the level indicated by the
+    /// threshold control" (manual ch. 2, Fig. 2.2).
+    #[inline]
+    pub fn turnover_offset_db(self) -> f64 {
+        if self == PyeRatio::Limit { 8.0 } else { 0.0 }
+    }
+
+    /// SWB1 opens the side chain in the linear (1:1) position.
+    #[inline]
+    pub fn is_linear(self) -> bool {
+        self == PyeRatio::Ratio1_1
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PyeDecay {
     Decay100,
     Decay200,
@@ -47,204 +84,215 @@ pub enum PyeDecay {
 }
 
 impl PyeDecay {
-    #[inline(always)]
-    pub fn time_seconds(&self) -> f32 {
+    /// C23 discharge time constant for each SWA position.
+    ///
+    /// The panel is marked 1-32 x100 ms, but those are nominal recovery
+    /// times: the resistor ladder (R54 1k8 ... R49 120k against C23 22 uF,
+    /// plus the surrounding network and electrolytic tolerance) does not
+    /// scale exactly 2:1. These are the time constants fitted to the
+    /// reference unit's recovery curves under the hyperbolic gain law.
+    #[inline]
+    pub fn tau_seconds(self) -> f64 {
         match self {
-            PyeDecay::Decay100 => 0.100,
-            PyeDecay::Decay200 => 0.200,
-            PyeDecay::Decay400 => 0.400,
-            PyeDecay::Decay800 => 0.800,
-            PyeDecay::Decay1600 => 1.600,
-            PyeDecay::Decay3200 => 3.200,
+            PyeDecay::Decay100 => 0.053,
+            PyeDecay::Decay200 => 0.096,
+            PyeDecay::Decay400 => 0.155,
+            PyeDecay::Decay800 => 0.327,
+            PyeDecay::Decay1600 => 0.785,
+            PyeDecay::Decay3200 => 1.685,
         }
     }
 }
 
+/// Proportional charging time constant of C23 (VT13/VT14 emitter path).
+const CHARGE_TAU: f64 = 0.4e-3;
+/// Charge-current limit, in normalised volts per second. Sets the attack:
+/// < 0.5 ms (63 %) in compression and ~1 ms in limit, per the BBC spec
+/// sheet ("Compression less than 0.5 m.secs. Limit 1 m.sec. +/-0.5").
+const CHARGE_SLEW: f64 = 4_500.0;
+/// The ratio amplifier saturates against its supply.
+const TARGET_MAX: f64 = 14.0;
+/// Maximum attenuation of the chopper (minimum pulse width), in dB.
+pub const MAX_GR_DB: f64 = 21.5;
+/// Germanium bridge: the OA47 knee rounds the turnover over ~1 dB.
+const KNEE: f64 = 0.06;
+
+/// Per-sample coefficients derived from the switch settings.
 #[derive(Clone, Copy, Debug)]
-pub struct PwmChopper {
-    sample_rate: f32,
-    // Compressor ballistics
-    comp_gr_db: f32,
-    attack_coeff: f32,
-    decay_coeff: f32,
-    current_decay: PyeDecay,
-
-    // Noise gate ballistics
-    gate_gr_db: f32,
-    gate_att_coeff: f32,
-    gate_rel_coeff: f32,
-
-    // Envelope detector filter state
-    det_env: f32,
-    det_coeff: f32,
+pub struct ControlCoeffs {
+    pub exponent: f64,
+    pub inv_turnover: f64,
+    pub decay_k: f64,
+    pub active: bool,
 }
 
-impl Default for PwmChopper {
-    fn default() -> Self {
-        Self::new(48000.0)
+impl ControlCoeffs {
+    pub fn new(ratio: PyeRatio, decay: PyeDecay, fs: f64) -> Self {
+        Self {
+            exponent: ratio.exponent(),
+            inv_turnover: 10f64.powf(-ratio.turnover_offset_db() / 20.0),
+            decay_k: 1.0 - (-1.0 / (decay.tau_seconds() * fs)).exp(),
+            active: !ratio.is_linear(),
+        }
     }
 }
 
-impl PwmChopper {
-    pub fn new(sample_rate: f32) -> Self {
-        let mut s = Self {
-            sample_rate,
-            comp_gr_db: 0.0,
-            attack_coeff: 0.0,
-            decay_coeff: 0.0,
-            current_decay: PyeDecay::Decay400,
-            gate_gr_db: 0.0,
-            gate_att_coeff: 0.0,
-            gate_rel_coeff: 0.0,
-            det_env: 0.0,
-            det_coeff: 0.0,
-        };
-        s.update_sample_rate(sample_rate);
+/// Ratio amplifier: rectified post-chopper level -> demanded C23 voltage.
+/// `level` is the full-wave rectified side-chain signal in internal units
+/// (1.0 = compression turnover at the dialled threshold).
+#[inline(always)]
+pub fn detector_target(level: f64, c: &ControlCoeffs) -> f64 {
+    if !c.active {
+        return 0.0;
+    }
+    let r = level * c.inv_turnover;
+    if r <= 0.9 {
+        return 0.0;
+    }
+    let e = r.powf(c.exponent) - 1.0;
+    // Smooth max(e, 0): the diode bridge does not switch on abruptly.
+    let k = KNEE * c.exponent;
+    let v = 0.5 * (e + (e * e + k * k).sqrt()) - 0.5 * k;
+    v.clamp(0.0, TARGET_MAX)
+}
+
+/// The C23 timing capacitor and the chopper gain it commands.
+#[derive(Clone, Copy, Debug)]
+pub struct ControlCell {
+    v: f64,
+    charge_k: f64,
+    slew: f64,
+    v_max: f64,
+}
+
+impl Default for ControlCell {
+    fn default() -> Self {
+        Self::new(48_000.0)
+    }
+}
+
+impl ControlCell {
+    pub fn new(fs: f64) -> Self {
+        let g_min = 10f64.powf(-MAX_GR_DB / 20.0);
+        let mut s = Self { v: 0.0, charge_k: 0.0, slew: 0.0, v_max: 1.0 / g_min - 1.0 };
+        s.set_sample_rate(fs);
         s
     }
 
+    pub fn set_sample_rate(&mut self, fs: f64) {
+        self.charge_k = 1.0 - (-1.0 / (CHARGE_TAU * fs)).exp();
+        self.slew = CHARGE_SLEW / fs;
+    }
+
     pub fn reset(&mut self) {
-        self.comp_gr_db = 0.0;
-        self.gate_gr_db = 0.0;
-        self.det_env = 0.0;
+        self.v = 0.0;
     }
 
-    pub fn update_sample_rate(&mut self, sample_rate: f32) {
-        self.sample_rate = sample_rate.max(44100.0);
-        // Fast attack (~0.8 ms) matching the 250 kHz PWM chopper response
-        let tau_att = 0.0008;
-        self.attack_coeff = 1.0 - (-1.0 / (tau_att * self.sample_rate)).exp();
-
-        // Detector peak smoothing filter (~0.3 ms)
-        let tau_det = 0.0003;
-        self.det_coeff = 1.0 - (-1.0 / (tau_det * self.sample_rate)).exp();
-
-        // Noise gate timings: 1 ms attack when opening, 250 ms release into attenuation
-        self.gate_att_coeff = 1.0 - (-1.0 / (0.001 * self.sample_rate)).exp();
-        self.gate_rel_coeff = 1.0 - (-1.0 / (0.250 * self.sample_rate)).exp();
-
-        self.set_decay(self.current_decay);
-    }
-
-    pub fn set_decay(&mut self, decay: PyeDecay) {
-        self.current_decay = decay;
-        let tau_rel = decay.time_seconds();
-        self.decay_coeff = 1.0 - (-1.0 / (tau_rel * self.sample_rate)).exp();
-    }
-
-    /// Compute target gain reduction in dB for a given detector level
+    /// Charge increment the detector would push into C23 this sample.
     #[inline(always)]
-    pub fn compute_target_gr(
-        sidechain_sample: f32,
-        threshold_db: f32,
-        ratio: PyeRatio,
-    ) -> (f32, f32) {
-        // Germanium bridge rectifier characteristic: lower forward voltage (~0.25V)
-        // with smooth exponential onset
-        let abs_sc = sidechain_sample.abs();
-        let sc_db = if abs_sc > 1e-9 {
-            20.0 * abs_sc.log10()
+    pub fn charge(&self, target: f64) -> f64 {
+        if target > self.v {
+            ((target - self.v) * self.charge_k).min(self.slew)
         } else {
-            -180.0
-        };
-
-        // Calibration: 0 dBVU = -18 dBFS (+4 dBu).
-        // Threshold param is calibrated in dBV (-24 to +16 dBV).
-        let mut turnover = threshold_db - 20.0;
-
-        // In LIMIT mode, the manual specifies that the turnover point is automatically
-        // shifted +8 dB higher so limiting occurs at 100% modulation.
-        if ratio.is_limit() {
-            turnover += 8.0;
-        }
-
-        let delta = sc_db - turnover;
-        let slope = ratio.slope();
-
-        // Germanium diode soft knee (3 dB transition band)
-        const KNEE_WIDTH: f32 = 3.0;
-        const HALF_KNEE: f32 = KNEE_WIDTH * 0.5;
-
-        let target_gr = if delta <= -HALF_KNEE {
             0.0
-        } else if delta >= HALF_KNEE {
-            delta * slope
-        } else {
-            let knee_overshoot = (delta + HALF_KNEE) * (delta + HALF_KNEE) / (2.0 * KNEE_WIDTH);
-            knee_overshoot * slope
-        };
-
-        (target_gr.max(0.0), sc_db)
+        }
     }
 
-    /// Process one sample through the PWM Chopper gain reduction engine.
-    ///
-    /// Returns: (attenuated_sample, instantaneous_comp_gr_db)
+    /// Apply a charge increment and the decay discharge (fraction `decay_k`).
     #[inline(always)]
-    pub fn process(
-        &mut self,
-        input_sample: f32,
-        sidechain_sample: f32,
-        threshold_db: f32,
-        ratio: PyeRatio,
-        gate_thresh_rel_db: f32, // -50 to -20 dB relative to compression threshold
-        gate_atten_db: f32,      // 0 to 10 dB in 2 dB steps
-    ) -> (f32, f32) {
-        // Sidechain envelope follower
-        let rect = sidechain_sample.abs();
-        if rect > self.det_env {
-            self.det_env += self.attack_coeff * (rect - self.det_env);
-        } else {
-            self.det_env += self.det_coeff * (rect - self.det_env);
+    pub fn step(&mut self, charge: f64, decay_k: f64) {
+        self.v += charge;
+        self.v -= self.v * decay_k;
+        if self.v < 1e-9 {
+            self.v = 0.0;
         }
-
-        let (target_gr, sc_db) = Self::compute_target_gr(self.det_env, threshold_db, ratio);
-
-        // Compression ballistics
-        if target_gr > self.comp_gr_db {
-            self.comp_gr_db += self.attack_coeff * (target_gr - self.comp_gr_db);
-        } else {
-            self.comp_gr_db += self.decay_coeff * (target_gr - self.comp_gr_db);
-        }
-
-        // Noise gate operation (Type 845751/01)
-        if gate_atten_db > 0.05 {
-            let mut turnover = threshold_db - 20.0;
-            if ratio.is_limit() {
-                turnover += 8.0;
-            }
-            let gate_turnover = turnover + gate_thresh_rel_db;
-
-            if sc_db < gate_turnover {
-                // Below noise threshold: smoothly introduce gate attenuation (250 ms time constant)
-                self.gate_gr_db += self.gate_rel_coeff * (gate_atten_db - self.gate_gr_db);
-            } else {
-                // Above noise threshold: quickly remove gate attenuation (1 ms attack)
-                self.gate_gr_db += self.gate_att_coeff * (0.0 - self.gate_gr_db);
-            }
-        } else {
-            self.gate_gr_db = 0.0;
-        }
-
-        // Clean up denormals
-        if self.comp_gr_db < 1e-4 {
-            self.comp_gr_db = 0.0;
-        }
-        if self.gate_gr_db < 1e-4 {
-            self.gate_gr_db = 0.0;
-        }
-
-        let total_gr_db = self.comp_gr_db + self.gate_gr_db;
-        // PWM mark-to-space energy attenuation
-        let chopper_gain = 10.0f32.powf(-total_gr_db / 20.0);
-        let out = input_sample * chopper_gain;
-
-        (out, self.comp_gr_db)
     }
 
-    /// Read current gain reduction in dB (for GUI metering)
+    /// Chopper mark fraction, i.e. the programme-chain gain.
     #[inline(always)]
-    pub fn current_gr_db(&self) -> f32 {
-        self.comp_gr_db
+    pub fn gain(&self) -> f64 {
+        // Minimum pulse width: the effective voltage saturates softly at v_max.
+        let v = self.v_max * (self.v / self.v_max).tanh();
+        1.0 / (1.0 + v)
+    }
+
+    pub fn voltage(&self) -> f64 {
+        self.v
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Closed loop at the internal rate: y = g * x, detector on |y|.
+    fn run(ratio: PyeRatio, decay: PyeDecay, x: &[f64], fs: f64) -> (Vec<f64>, Vec<f64>) {
+        let c = ControlCoeffs::new(ratio, decay, fs);
+        let mut cell = ControlCell::new(fs);
+        let mut y = Vec::with_capacity(x.len());
+        let mut g = Vec::with_capacity(x.len());
+        for &s in x {
+            let out = s * cell.gain();
+            let t = detector_target(out.abs(), &c);
+            cell.step(cell.charge(t), c.decay_k);
+            y.push(out);
+            g.push(cell.gain());
+        }
+        (y, g)
+    }
+
+    fn sine(db: f64, f: f64, secs: f64, fs: f64) -> Vec<f64> {
+        let a = 10f64.powf(db / 20.0);
+        (0..(secs * fs) as usize).map(|i| a * (std::f64::consts::TAU * f * i as f64 / fs).sin()).collect()
+    }
+
+    fn peak_db(v: &[f64]) -> f64 {
+        20.0 * v.iter().fold(0.0f64, |m, s| m.max(s.abs())).log10()
+    }
+
+    #[test]
+    fn static_ratios_follow_fig_2_2() {
+        let fs = 192_000.0;
+        for (ratio, r) in [(PyeRatio::Ratio2_1, 2.0), (PyeRatio::Ratio3_1, 3.0), (PyeRatio::Ratio5_1, 5.0)] {
+            let lo = peak_db(&run(ratio, PyeDecay::Decay3200, &sine(6.0, 1000.0, 1.0, fs), fs).0[150_000..]);
+            let hi = peak_db(&run(ratio, PyeDecay::Decay3200, &sine(12.0, 1000.0, 1.0, fs), fs).0[150_000..]);
+            let measured = 6.0 / (hi - lo);
+            assert!((measured - r).abs() < 0.2 * r, "{ratio:?}: {measured:.2}:1");
+        }
+    }
+
+    #[test]
+    fn limit_turnover_is_8db_up() {
+        let fs = 192_000.0;
+        // 6 dB over the dial: below the limit turnover, untouched.
+        let y = run(PyeRatio::Limit, PyeDecay::Decay400, &sine(6.0, 1000.0, 0.5, fs), fs).0;
+        assert!(peak_db(&y[60_000..]) > 5.8);
+        // 20 dB over the dial: held to ~+8.5 dB.
+        let y = run(PyeRatio::Limit, PyeDecay::Decay400, &sine(20.0, 1000.0, 0.5, fs), fs).0;
+        let p = peak_db(&y[60_000..]);
+        assert!((7.8..9.5).contains(&p), "limit output {p}");
+    }
+
+    #[test]
+    fn attack_meets_bbc_spec() {
+        let fs = 192_000.0;
+        for (ratio, max_ms) in [(PyeRatio::Ratio3_1, 0.5), (PyeRatio::Limit, 1.5)] {
+            let mut x = sine(-10.0, 1000.0, 0.01, fs);
+            x.extend(sine(18.0, 1000.0, 0.05, fs));
+            let (_, g) = run(ratio, PyeDecay::Decay400, &x, fs);
+            let n0 = (0.01 * fs) as usize;
+            let final_db = -20.0 * g[g.len() - 1].log10();
+            let t63 = g[n0..].iter().position(|&v| -20.0 * v.log10() >= 0.63 * final_db).unwrap();
+            let ms = t63 as f64 / fs * 1000.0;
+            assert!(ms <= max_ms, "{ratio:?}: 63% after {ms:.2} ms");
+        }
+    }
+
+    #[test]
+    fn attenuation_saturates_near_21_5_db() {
+        let fs = 192_000.0;
+        let (_, g) = run(PyeRatio::Limit, PyeDecay::Decay400, &sine(40.0, 1000.0, 0.3, fs), fs);
+        let gr = -20.0 * g[g.len() - 1].log10();
+        assert!((19.0..=MAX_GR_DB).contains(&gr), "max GR {gr}");
     }
 }

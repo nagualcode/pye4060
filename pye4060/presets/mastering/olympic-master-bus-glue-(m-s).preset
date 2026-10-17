@@ -6,7 +6,7 @@ tags = ["mastering", "glue", "m-s", "bus"]
 
 [params]
 mode = 2
-link = 1
+link = 0
 analog = 0
 bypass = 0
 
