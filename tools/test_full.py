@@ -4,11 +4,13 @@
 Compares Pye4060 against Waves Kramer PIE and original Pye TVT 84-4060 hardware specifications.
 """
 
+import os
 import sys
 import numpy as np
 import pedalboard
 
-PYE_PATH = "/Users/nagual/Library/Audio/Plug-Ins/VST3/Pye4060.vst3"
+# Built bundle (cargo truce build); the plugin itself is installed as AU.
+PYE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "pye4060", "target", "bundles", "Pye4060.vst3")
 WAVES_PATH = "/Library/Audio/Plug-Ins/VST3/WaveShell1-VST3 17.1.vst3"
 SR = 48000
 

@@ -97,8 +97,8 @@ impl PyeEngine {
         let shared = p.routing == Routing::Stereo || p.link;
         for k in 0..self.factor {
             let g = if shared { [self.cells[0].gain(); 2] } else { [self.cells[0].gain(), self.cells[1].gain()] };
-            let (y0, l0) = self.channels[0].tick(up[0][k], g[0], &p.tick[0]);
-            let (y1, l1) = self.channels[1].tick(up[1][k], g[1], &p.tick[1]);
+            let (y0, l0) = self.channels[0].tick(up[0][k], g[0], p.coeffs[0].h2_drive, &p.tick[0]);
+            let (y1, l1) = self.channels[1].tick(up[1][k], g[1], p.coeffs[1].h2_drive, &p.tick[1]);
             wet[0][k] = y0;
             wet[1][k] = y1;
 
@@ -107,18 +107,18 @@ impl PyeEngine {
             match (p.routing, p.link) {
                 (Routing::Stereo, _) => {
                     // One detector fed by the louder channel.
-                    let c = self.cells[0].charge(t0.max(t1));
+                    let c = self.cells[0].charge(t0.max(t1), &p.coeffs[0]);
                     self.cells[0].step(c, p.coeffs[0].decay_k);
                 }
                 (_, true) => {
                     // Paralleled C23s: each detector charges 2C; the decay
                     // resistors discharge in parallel.
-                    let c = 0.5 * (self.cells[0].charge(t0) + self.cells[0].charge(t1));
+                    let c = 0.5 * (self.cells[0].charge(t0, &p.coeffs[0]) + self.cells[0].charge(t1, &p.coeffs[1]));
                     self.cells[0].step(c, 0.5 * (p.coeffs[0].decay_k + p.coeffs[1].decay_k));
                 }
                 (_, false) => {
-                    let c0 = self.cells[0].charge(t0);
-                    let c1 = self.cells[1].charge(t1);
+                    let c0 = self.cells[0].charge(t0, &p.coeffs[0]);
+                    let c1 = self.cells[1].charge(t1, &p.coeffs[1]);
                     self.cells[0].step(c0, p.coeffs[0].decay_k);
                     self.cells[1].step(c1, p.coeffs[1].decay_k);
                 }
@@ -160,9 +160,9 @@ impl PyeEngine {
         let mut wet = [0.0; MAX_OS];
         for k in 0..self.factor {
             let g = self.cells[0].gain();
-            let (y, lvl) = self.channels[0].tick(up[k], g, &p.tick[0]);
+            let (y, lvl) = self.channels[0].tick(up[k], g, p.coeffs[0].h2_drive, &p.tick[0]);
             wet[k] = y;
-            let c = self.cells[0].charge(detector_target(lvl, &p.coeffs[0]));
+            let c = self.cells[0].charge(detector_target(lvl, &p.coeffs[0]), &p.coeffs[0]);
             self.cells[0].step(c, p.coeffs[0].decay_k);
             self.gain_min[0] = self.gain_min[0].min(g);
         }

@@ -48,7 +48,8 @@ def fund_db(y,f,n=4800):
     h,_=harm(y[-n:],f,1); return db(h[0])
 
 # --- Pye4060 adapter (same settings vocabulary as Waves)
-PYE=os.path.expanduser("~/Library/Audio/Plug-Ins/VST3/Pye4060.vst3")
+# Built bundle (cargo truce build); the plugin itself is installed as AU.
+PYE=os.path.join(os.path.dirname(os.path.abspath(__file__)),"..","pye4060","target","bundles","Pye4060.vst3")
 RMAP={'1:1 ':'1:1','2:1 ':'2:1','3:1 ':'3:1','5:1 ':'5:1','Limit ':'Limit'}
 DMAP={'1 x100ms':'100 ms','2 x100ms':'200 ms','4 x100ms':'400 ms','8 x100ms':'800 ms','16 x100ms':'1600 ms','32 x100ms':'3200 ms'}
 AMAP={'Off ':'Off','50Hz ':'50 Hz','60Hz ':'60 Hz'}

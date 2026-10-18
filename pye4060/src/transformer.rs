@@ -14,10 +14,13 @@
 //!   5-pole response plus the T2 leakage resonance near 10.7 kHz;
 //!   +0.45 dB at 10 kHz, -0.3 dB at 15 kHz, -6.7 dB at 18 kHz, -12 dB at
 //!   20 kHz, ~30 dB/octave beyond (manual: +0.5/-1 dB 30 Hz-15 kHz).
-//! - VT3/VT4/VT19 + VT5 post-chopper amplifier: class-A, dominant H2,
-//!   saturates about 21 dB above the turnover. It sits inside the threshold
-//!   control's feedback network, which keeps leaking signal around the
-//!   stage once it clips, so overload rounds off instead of hitting a wall.
+//!   The side chain is tapped after the LC filter, ahead of the T2
+//!   resonance and the post-chopper amplifier.
+//! - VT3/VT4/VT19 + VT5 post-chopper amplifier: class-A, dominant H2 that
+//!   fades out under compression, saturates about 21 dB above the
+//!   turnover. It sits inside the threshold control's feedback network,
+//!   which keeps leaking signal around the stage once it clips, so
+//!   overload rounds off instead of hitting a wall.
 //! - VT6-VT9 push-pull driver into T2 772246: symmetric soft saturation and
 //!   low-frequency core flux at high output levels (rated +24 dBm).
 
@@ -27,12 +30,18 @@ use crate::biquad::{Biquad, OnePole};
 const POST_CLIP: f64 = 11.2;
 /// Signal passed around the clipped stage by its feedback network.
 const POST_LEAK: f64 = 0.16;
-/// Second-order coefficient of the post-chopper amplifier: H2 is -64 dB
-/// at the turnover and rises 1 dB per dB of level.
-const POST_H2: f64 = 0.0012;
-/// Input amplifier: tiny H2, and enough headroom that the chopper always
-/// gets to act first (no pre-chopper clipping is measurable up to +44 dB).
-const PRE_H2: f64 = 0.0001;
+/// Even-order term of the post-chopper amplifier, `a s^2 / (1 + c |s|)`:
+/// H2 is -65 dB at the turnover (400 ms decay), rises 1 dB per dB and
+/// flattens out ~25 dB above the turnover.
+const POST_H2: f64 = 0.002_754;
+const POST_H2_SAT: f64 = 0.058_35;
+/// The even-order term fades out under compression as g^5 / (g^5 + k):
+/// gone below ~12 dB of attenuation (reference unit).
+const POST_H2_FADE: f64 = 0.000_668_344;
+/// Input amplifier: enough headroom that the chopper always gets to act
+/// first (no pre-chopper clipping is measurable up to +44 dB) and no
+/// measurable H2 (the reference unit's H2 vanishes under compression, so
+/// it cannot come from ahead of the chopper).
 const PRE_CLIP: f64 = 300.0;
 /// Output stage saturation onset, dBFS-linear (+24 dBm rated with
 /// 0 VU = +4 dBu = -18 dBFS puts the hard limit near +2 dBFS; the
@@ -107,26 +116,32 @@ impl ProgrammeChain {
     #[inline(always)]
     pub fn input(&mut self, u: f64) -> f64 {
         let u = self.t1_hp.process(u);
-        soft_clip(u + PRE_H2 * u * u, PRE_CLIP, PRE_CLIP * 1.08)
+        soft_clip(u, PRE_CLIP, PRE_CLIP * 1.08)
     }
 
     /// Chopper, LC filter and post-chopper amplifier. `gain` is the mark
     /// fraction for this sample; `noise` is input-referred hiss that the
-    /// chopper attenuates along with the programme.
+    /// chopper attenuates along with the programme; `h2_drive` scales the
+    /// amplifier's even-order term. Returns (side-chain tap, programme).
     #[inline(always)]
-    pub fn chop(&mut self, u: f64, gain: f64, noise: f64) -> f64 {
+    pub fn chop(&mut self, u: f64, gain: f64, noise: f64, h2_drive: f64) -> (f64, f64) {
         // Switch-drive feedthrough follows changes in the mark fraction;
         // the coupling capacitors pass only the changes.
         let ft = FEEDTHROUGH * (self.last_gain - gain);
         self.last_gain = gain;
         let s = (u + noise) * gain + ft;
-        let s = self.lc_pair2.process(self.lc_pair1.process(self.lc_real.process(s)));
-        let s = self.t2_peak.process(s);
+        // The side chain is tapped after the LC filter: the T2 resonance and
+        // the amplifier's distortion stay outside the loop.
+        let tap = self.lc_pair2.process(self.lc_pair1.process(self.lc_real.process(s)));
+        let s = self.t2_peak.process(tap);
+        // Even-order term, fading out with the attenuation.
+        let g5 = gain * gain * gain * gain * gain;
+        let fade = g5 / (g5 + POST_H2_FADE) * (1.0 + POST_H2_FADE);
+        let h2 = fade * h2_drive * POST_H2 * s * s / (1.0 + h2_drive * POST_H2_SAT * s.abs());
         // Single-ended Class-A collector stage (VT3-VT5) clips asymmetrically
         // on one rail first; C16a&b (post_hp) AC-couples its output.
-        let h2 = POST_H2 * (0.45 + 0.55 * gain * gain);
-        let s = soft_clip_leaky(s + h2 * s * s, POST_CLIP, POST_CLIP * 2.4, POST_LEAK);
-        self.post_hp.process(s)
+        let s = soft_clip_leaky(s + h2, POST_CLIP, POST_CLIP * 2.4, POST_LEAK);
+        (tap, self.post_hp.process(s))
     }
 }
 

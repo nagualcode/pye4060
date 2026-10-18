@@ -4,7 +4,8 @@
 //! Olympic Studios on Jimi Hendrix, Led Zeppelin and Rolling Stones sessions:
 //! - feedback side chain (T4, OA47 bridge, ratio amplifier) driving the C23
 //!   timing capacitor, as in the 845751/01 schematic and manual Fig. 2.4
-//! - 250 kHz chopper modelled by its mark:space average, hyperbolic gain law,
+//! - 250 kHz chopper modelled by its mark:space average, blocking-oscillator
+//!   gain law driven by a linear-with-bias ratio amplifier,
 //!   ~21.5 dB maximum attenuation
 //! - audio-rate control ripple: the program-dependent "scrunch"
 //! - 5-pole LC anti-carrier filter, T1/T2 transformers, class-A amplifiers

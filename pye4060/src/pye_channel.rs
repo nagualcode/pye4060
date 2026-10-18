@@ -1,9 +1,9 @@
 //! One 4060 channel at the internal (oversampled) rate.
 //!
 //! ```text
-//! input --> T1 --> VT1 --+--> chopper VT2 --> LC filter --> VT3-VT5 --+--> output atten. --> VT6-VT9/T2 --> out
-//!                        |         ^                                  |    (+ gate pad)
-//!                        |         | mark:space                       |
+//! input --> T1 --> VT1 --+--> chopper VT2 --> LC filter --+--> VT3-VT5 --> output atten. --> VT6-VT9/T2 --> out
+//!                        |         ^                     |                (+ gate pad)
+//!                        |         | mark:space          |
 //!                        |     C23 / blocking osc. <-- ratio amp <-- bridge <-- T4
 //!                        +--> noise gate detector (pad on output attenuator)
 //! ```
@@ -98,16 +98,18 @@ impl PyeChannel {
     }
 
     /// Process one internal sample. `x` is the input in dBFS-linear units,
-    /// `gain` the chopper mark fraction. Returns (output, side-chain level).
+    /// `gain` the chopper mark fraction, `h2_drive` the decay switch's drive
+    /// of the post-chopper amplifier's even-order term. Returns (output,
+    /// side-chain level).
     #[inline(always)]
-    pub fn tick(&mut self, x: f64, gain: f64, p: &TickParams) -> (f64, f64) {
+    pub fn tick(&mut self, x: f64, gain: f64, h2_drive: f64, p: &TickParams) -> (f64, f64) {
         let analog = p.analog != AnalogMode::Off;
         let u = self.chain.input(x / p.turnover);
         let gate = self.gate.process(u, p.gate_threshold, p.gate_atten);
         let hiss = if analog { HISS_PRE * self.noise.hiss() } else { 0.0 };
-        let s = self.chain.chop(u, gain, hiss);
+        let (tap, s) = self.chain.chop(u, gain, hiss, h2_drive);
 
-        let sc = self.t4_hp.process(s);
+        let sc = self.t4_hp.process(tap);
         let sc = if self.sc_filter == ScFilter::Off { sc } else { self.sc_hp.process(sc) };
 
         let mut y = self.output.process(s * p.turnover * gate);

@@ -1,6 +1,6 @@
 [package]
 name = "pye4060"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 
 [lib]
@@ -11,16 +11,17 @@ name = "pye4060-standalone"
 path = "src/main.rs"
 required-features = ["standalone"]
 
-# Scaffolded default: CLAP + VST3 + standalone. To add LV2 / AU / AAX / VST2,
+# Default formats: CLAP + VST3 + AU v2 + standalone. To add LV2 / AU / AAX / VST2,
 # add the matching feature + optional dep below (e.g.
 # `lv2 = ["dep:truce-lv2"]` +
 # `truce-lv2 = { version = "6.3", optional = true }`).
 # Each format feature gates the matching wrapper crate as an optional
 # dep.
 [features]
-default = ["clap", "vst3", "standalone"]
+default = ["clap", "vst3", "au", "standalone"]
 clap = ["dep:truce-clap", "dep:clap-sys"]
 vst3 = ["dep:truce-vst3"]
+au = ["dep:truce-au"]
 standalone = ["dep:truce-standalone"]
 shell = ["truce/shell"]
 # Flags any allocation your DSP makes on the audio thread in `process`.
@@ -35,6 +36,7 @@ truce-egui = { version = "6.3" }
 egui = { version = "0.34" }
 truce-clap = { version = "6.3", optional = true }
 truce-vst3 = { version = "6.3", optional = true }
+truce-au = { version = "6.3", optional = true }
 truce-standalone = { version = "6.3", features = ["gui"], optional = true }
 clap-sys = { version = "0.5", optional = true }
 

@@ -1,8 +1,8 @@
 //! Side chain and PWM chopper gain law of the Pye 4060 (circuit 845751/01).
 //!
 //! The 4060 is a *feedback* compressor (manual Fig. 2.4, BBC diagram 2): the
-//! side chain samples the programme chain after the chopper, LC filter and
-//! amplifier, so the control loop reacts to its own output.
+//! side chain samples the programme chain after the chopper and LC filter,
+//! so the control loop reacts to its own output.
 //!
 //! ```text
 //!  post-chopper signal -> T4 772201 -> OA47 bridge (MR4-7, full wave)
@@ -12,20 +12,22 @@
 //!     -> VT2 V405 shunt switch: audio passes for the "mark" fraction
 //! ```
 //!
-//! Model, in terms of the normalised C23 voltage `V`:
-//! - Chopper gain is hyperbolic, `g = 1 / (1 + V)`, i.e. the mark:space
-//!   ratio shrinks as the control voltage rises. With an exponential RC
-//!   discharge this law reproduces the measured recovery shape (near-linear
-//!   in dB while deep, exponential tail near unity) to 0.07 dB RMS at every
-//!   depth with a single time constant, where a dB-domain law does not.
-//! - The ratio amplifier produces a power law of the rectified output,
-//!   `V_target = (|s| / turnover)^n - 1`, n = ratio - 1. In the loop this
-//!   gives exactly 20 log10(1 + V) = n (L_out - L_turnover), the constant
-//!   compression ratios of manual Fig. 2.2.
-//! - C23 charges through a transistor stage: proportional (tau_a) with a
-//!   current limit (slew), and discharges through the decay resistor.
-//! - The blocking oscillator has a minimum pulse width: attenuation tops out
-//!   around 21.5 dB, approached softly.
+//! Model, in terms of the normalised C23 voltage `w` (white-box reading of
+//! the reference unit's model, see README):
+//! - The ratio amplifier is *linear with a bias*: `w_target = k |s| - b`.
+//!   SWB2/SWB3 swap resistor sets, i.e. they change the amplifier's gain
+//!   and the OA47/VT16 conduction threshold, not an exponent. The
+//!   compression ratio emerges from that slope and bias against the
+//!   chopper law; so does the 2:1 position's higher knee.
+//! - At rest C23 sits at the VT12 bias, `w = 0.76`. The blocking
+//!   oscillator turns `w` into a mark fraction through a smooth monotonic
+//!   law, `g = exp(P(ln w))` (4th-order fit), unity up to w = 0.767 and
+//!   bottoming out at the minimum pulse width, -21.5 dB.
+//! - C23 charges through the VT13/VT14 junction, so the charging current
+//!   rises expansively with the overdrive: the small top-ups that refill
+//!   C23 on every waveform peak are slow (5 ms), large steps are fast and
+//!   end up current-limited (the BBC attack spec). C23 decays exponentially
+//!   back to the rest bias through the SWA resistor.
 //!
 //! Because the gain is applied inside the loop, ripple on C23 between
 //! waveform peaks modulates the audio at audio rate. That is the 4060's
@@ -44,51 +46,32 @@ pub enum PyeRatio {
 }
 
 impl PyeRatio {
-    /// Exponent of the ratio amplifier (compression ratio minus one).
-    /// Limit: the manual specifies "greater than 20:1"; 25:1 matches the
-    /// measured limiting slope.
+    /// Ratio amplifier gain `k` and bias `b`: `w_target = k |s| - b`, with
+    /// `|s|` the rectified side chain in internal units (1.0 = turnover at
+    /// the dialled threshold). The effective turnovers come out at +2.6 dB
+    /// (2:1), +0.1 dB (3:1), +0.4 dB (5:1) and +8.2 dB (Limit: "automatically
+    /// set 8 dB above the level indicated by the threshold control", manual
+    /// ch. 2), and the Limit slope gives "greater than 20:1".
     #[inline]
-    pub fn exponent(self) -> f64 {
+    pub fn detector(self) -> (f64, f64) {
         match self {
-            PyeRatio::Ratio1_1 => 0.0,
-            PyeRatio::Ratio2_1 => 1.0,
-            PyeRatio::Ratio3_1 => 2.0,
-            PyeRatio::Ratio5_1 => 4.0,
-            PyeRatio::Limit => 24.0,
+            PyeRatio::Ratio1_1 => (0.0, 0.0),
+            PyeRatio::Ratio2_1 => (0.300_402, -0.36),
+            PyeRatio::Ratio3_1 => (0.967_369, 0.208),
+            PyeRatio::Ratio5_1 => (2.448_843, 1.8),
+            PyeRatio::Limit => (6.586_020, 16.2),
         }
     }
 
-    /// Turnover relative to the threshold dial. In the limit position the
-    /// turnover is "automatically set 8 dB above the level indicated by the
-    /// threshold control" (manual ch. 2, Fig. 2.2). In the 2:1 position the
-    /// lower SWB2 shunt resistor (R62 910R vs R61 2k7 / R60 8k2) shifts the
-    /// effective OA47/VT16 conduction threshold up by ~1.6 dB.
+    /// C23 charge-current limit, normalised volts per second. Sets the
+    /// attack: < 0.5 ms (63 %) in compression and ~1 ms in limit, per the
+    /// BBC spec sheet ("Compression less than 0.5 m.secs. Limit 1 m.sec.
+    /// +/-0.5"); the limit resistor set passes less charging current.
     #[inline]
-    pub fn turnover_offset_db(self) -> f64 {
+    pub fn charge_slew(self) -> f64 {
         match self {
-            PyeRatio::Limit => 8.0,
-            PyeRatio::Ratio2_1 => 1.6,
-            _ => 0.0,
-        }
-    }
-
-    /// Exact integer power `r^(ratio - 1)` without transcendental `powf`.
-    #[inline(always)]
-    pub fn pow_ratio(self, r: f64) -> f64 {
-        match self {
-            PyeRatio::Ratio1_1 => 1.0,
-            PyeRatio::Ratio2_1 => r,
-            PyeRatio::Ratio3_1 => r * r,
-            PyeRatio::Ratio5_1 => {
-                let r2 = r * r;
-                r2 * r2
-            }
-            PyeRatio::Limit => {
-                let r2 = r * r;
-                let r4 = r2 * r2;
-                let r8 = r4 * r4;
-                r8 * r8 * r8
-            }
+            PyeRatio::Limit => 600.0,
+            _ => 3_000.0,
         }
     }
 
@@ -110,87 +93,115 @@ pub enum PyeDecay {
 }
 
 impl PyeDecay {
-    /// C23 discharge time constant for each SWA position.
+    /// C23 decay time constant towards the rest bias for each SWA position.
     ///
     /// The panel is marked 1-32 x100 ms, but those are nominal recovery
     /// times: the resistor ladder (R54 1k8 ... R49 120k against C23 22 uF,
     /// plus the surrounding network and electrolytic tolerance) does not
-    /// scale exactly 2:1. These are the time constants fitted to the
-    /// reference unit's recovery curves under the hyperbolic gain law.
+    /// scale exactly 2:1. These are the reference unit's constants.
     #[inline]
     pub fn tau_seconds(self) -> f64 {
         match self {
-            PyeDecay::Decay100 => 0.053,
-            PyeDecay::Decay200 => 0.096,
-            PyeDecay::Decay400 => 0.155,
-            PyeDecay::Decay800 => 0.327,
-            PyeDecay::Decay1600 => 0.785,
-            PyeDecay::Decay3200 => 1.685,
+            PyeDecay::Decay100 => 0.0585,
+            PyeDecay::Decay200 => 0.1064,
+            PyeDecay::Decay400 => 0.1707,
+            PyeDecay::Decay800 => 0.3604,
+            PyeDecay::Decay1600 => 0.8335,
+            PyeDecay::Decay3200 => 1.8535,
+        }
+    }
+
+    /// Side-chain sensitivity of each SWA position relative to 400 ms.
+    /// The reference unit's static curve shifts with the decay switch
+    /// (+0.2 dB at 100/200 ms, -0.3 dB at 800 ms, +1.5 dB at 3.2 s); the
+    /// shape does not follow a simple charge-source loading of C23, so the
+    /// measured trims are used as they are.
+    #[inline]
+    pub fn sc_trim(self) -> f64 {
+        match self {
+            PyeDecay::Decay100 | PyeDecay::Decay200 => 1.023_29,
+            PyeDecay::Decay400 => 1.0,
+            PyeDecay::Decay800 => 0.961_61,
+            PyeDecay::Decay1600 => 0.991_97,
+            PyeDecay::Decay3200 => 1.184_40,
+        }
+    }
+
+    /// Drive of the post-chopper amplifier's even-order term relative to
+    /// 400 ms (the reference unit's H2 rises at the long settings).
+    #[inline]
+    pub fn h2_drive(self) -> f64 {
+        match self {
+            PyeDecay::Decay100 | PyeDecay::Decay200 => 0.988_55,
+            PyeDecay::Decay400 => 1.0,
+            PyeDecay::Decay800 => 1.059_26,
+            PyeDecay::Decay1600 => 1.174_90,
+            PyeDecay::Decay3200 => 1.621_81,
         }
     }
 }
 
-/// Proportional charging time constant of C23 (VT13/VT14 emitter path).
-const CHARGE_TAU: f64 = 0.4e-3;
-/// Charge-current limit, in normalised volts per second. Sets the attack:
-/// < 0.5 ms (63 %) in compression and ~1 ms in limit, per the BBC spec
-/// sheet ("Compression less than 0.5 m.secs. Limit 1 m.sec. +/-0.5").
-const CHARGE_SLEW: f64 = 4_500.0;
-/// The ratio amplifier saturates against its supply.
-const TARGET_MAX: f64 = 14.0;
+/// Small-signal charging time constant of C23 (VT13/VT14 emitter path).
+/// Together with the decay it sets how far C23 sags between waveform
+/// peaks, i.e. the static curve at each decay position.
+const CHARGE_TAU: f64 = 5.0e-3;
+/// Overdrive at which the junction's charging current doubles.
+const CHARGE_KNEE: f64 = 0.1;
+/// C23 rest voltage (VT12 bias).
+const W_REST: f64 = 0.76;
+/// Below this the blocking oscillator runs at full mark (g = 1).
+const W_UNITY: f64 = 0.767_228_665;
+/// Minimum pulse width: the law's input saturates here (-21.4 dB).
+const W_MAX: f64 = 3.75;
+/// Floor of the mark fraction (-21.5 dB).
+const G_MIN: f64 = 0.084_040_152_517_314;
+/// Blocking-oscillator law `ln g = P(ln w)`, highest power first.
+const LAW: [f64; 5] = [0.293_753_281_193_313, -0.609_876_693_643_099, 0.623_292_474_919_351, -1.879_975_446_705_421, -0.554_692_551_266_39];
 /// Maximum attenuation of the chopper (minimum pulse width), in dB.
 pub const MAX_GR_DB: f64 = 21.5;
-/// Germanium bridge: the OA47 knee rounds the turnover over ~1 dB.
-const KNEE: f64 = 0.06;
 
 /// Per-sample coefficients derived from the switch settings.
 #[derive(Clone, Copy, Debug)]
 pub struct ControlCoeffs {
-    pub ratio: PyeRatio,
-    pub exponent: f64,
-    pub inv_turnover: f64,
+    pub slope: f64,
+    pub bias: f64,
     pub decay_k: f64,
+    /// Charge-current limit per internal sample.
+    pub slew: f64,
+    pub h2_drive: f64,
     pub active: bool,
 }
 
 impl ControlCoeffs {
     pub fn new(ratio: PyeRatio, decay: PyeDecay, fs: f64) -> Self {
+        let (k, b) = ratio.detector();
         Self {
-            ratio,
-            exponent: ratio.exponent(),
-            inv_turnover: 10f64.powf(-ratio.turnover_offset_db() / 20.0),
+            slope: k * decay.sc_trim(),
+            bias: b,
             decay_k: 1.0 - (-1.0 / (decay.tau_seconds() * fs)).exp(),
+            slew: ratio.charge_slew() / fs,
+            h2_drive: decay.h2_drive(),
             active: !ratio.is_linear(),
         }
     }
 }
 
-/// Ratio amplifier: rectified post-chopper level -> demanded C23 voltage.
-/// `level` is the full-wave rectified side-chain signal in internal units
-/// (1.0 = compression turnover at the dialled threshold).
+/// Ratio amplifier: rectified side-chain level -> demanded C23 voltage.
+/// `level` is in internal units (1.0 = compression turnover at the dialled
+/// threshold). Only demands above the present C23 voltage charge it.
 #[inline(always)]
 pub fn detector_target(level: f64, c: &ControlCoeffs) -> f64 {
     if !c.active {
         return 0.0;
     }
-    let r = level * c.inv_turnover;
-    if r <= 0.9 {
-        return 0.0;
-    }
-    let e = c.ratio.pow_ratio(r) - 1.0;
-    // Smooth max(e, 0): the diode bridge does not switch on abruptly.
-    let k = KNEE * c.exponent;
-    let v = 0.5 * (e + (e * e + k * k).sqrt()) - 0.5 * k;
-    v.clamp(0.0, TARGET_MAX)
+    c.slope * level - c.bias
 }
 
 /// The C23 timing capacitor and the chopper gain it commands.
 #[derive(Clone, Copy, Debug)]
 pub struct ControlCell {
-    v: f64,
+    w: f64,
     charge_k: f64,
-    slew: f64,
-    v_max: f64,
 }
 
 impl Default for ControlCell {
@@ -201,51 +212,51 @@ impl Default for ControlCell {
 
 impl ControlCell {
     pub fn new(fs: f64) -> Self {
-        let g_min = 10f64.powf(-MAX_GR_DB / 20.0);
-        let mut s = Self { v: 0.0, charge_k: 0.0, slew: 0.0, v_max: 1.0 / g_min - 1.0 };
+        let mut s = Self { w: W_REST, charge_k: 0.0 };
         s.set_sample_rate(fs);
         s
     }
 
     pub fn set_sample_rate(&mut self, fs: f64) {
         self.charge_k = 1.0 - (-1.0 / (CHARGE_TAU * fs)).exp();
-        self.slew = CHARGE_SLEW / fs;
     }
 
     pub fn reset(&mut self) {
-        self.v = 0.0;
+        self.w = W_REST;
     }
 
     /// Charge increment the detector would push into C23 this sample.
     #[inline(always)]
-    pub fn charge(&self, target: f64) -> f64 {
-        if target > self.v {
-            ((target - self.v) * self.charge_k).min(self.slew)
+    pub fn charge(&self, target: f64, c: &ControlCoeffs) -> f64 {
+        if target > self.w {
+            let e = target - self.w;
+            (e * self.charge_k * (1.0 + e / CHARGE_KNEE)).min(c.slew)
         } else {
             0.0
         }
     }
 
-    /// Apply a charge increment and the decay discharge (fraction `decay_k`).
+    /// Apply a charge increment and the decay towards the rest bias
+    /// (fraction `decay_k`).
     #[inline(always)]
     pub fn step(&mut self, charge: f64, decay_k: f64) {
-        self.v += charge;
-        self.v -= self.v * decay_k;
-        if self.v < 1e-9 {
-            self.v = 0.0;
-        }
+        self.w += charge;
+        self.w -= (self.w - W_REST) * decay_k;
     }
 
     /// Chopper mark fraction, i.e. the programme-chain gain.
     #[inline(always)]
     pub fn gain(&self) -> f64 {
-        // Minimum pulse width: the effective voltage saturates softly at v_max.
-        let v = self.v_max * (self.v / self.v_max).tanh();
-        1.0 / (1.0 + v)
+        if self.w <= W_UNITY {
+            return 1.0;
+        }
+        let u = self.w.min(W_MAX).ln();
+        let p = (((LAW[0] * u + LAW[1]) * u + LAW[2]) * u + LAW[3]) * u + LAW[4];
+        p.exp().clamp(G_MIN, 1.0)
     }
 
     pub fn voltage(&self) -> f64 {
-        self.v
+        self.w
     }
 }
 
@@ -262,7 +273,7 @@ mod tests {
         for &s in x {
             let out = s * cell.gain();
             let t = detector_target(out.abs(), &c);
-            cell.step(cell.charge(t), c.decay_k);
+            cell.step(cell.charge(t, &c), c.decay_k);
             y.push(out);
             g.push(cell.gain());
         }
@@ -304,7 +315,7 @@ mod tests {
     #[test]
     fn attack_meets_bbc_spec() {
         let fs = 192_000.0;
-        for (ratio, max_ms) in [(PyeRatio::Ratio3_1, 0.5), (PyeRatio::Limit, 1.5)] {
+        for (ratio, min_ms, max_ms) in [(PyeRatio::Ratio3_1, 0.0, 0.5), (PyeRatio::Limit, 0.5, 1.5)] {
             let mut x = sine(-10.0, 1000.0, 0.01, fs);
             x.extend(sine(18.0, 1000.0, 0.05, fs));
             let (_, g) = run(ratio, PyeDecay::Decay400, &x, fs);
@@ -312,7 +323,7 @@ mod tests {
             let final_db = -20.0 * g[g.len() - 1].log10();
             let t63 = g[n0..].iter().position(|&v| -20.0 * v.log10() >= 0.63 * final_db).unwrap();
             let ms = t63 as f64 / fs * 1000.0;
-            assert!(ms <= max_ms, "{ratio:?}: 63% after {ms:.2} ms");
+            assert!((min_ms..=max_ms).contains(&ms), "{ratio:?}: 63% after {ms:.2} ms");
         }
     }
 
@@ -322,5 +333,15 @@ mod tests {
         let (_, g) = run(PyeRatio::Limit, PyeDecay::Decay400, &sine(40.0, 1000.0, 0.3, fs), fs);
         let gr = -20.0 * g[g.len() - 1].log10();
         assert!((19.0..=MAX_GR_DB).contains(&gr), "max GR {gr}");
+    }
+
+    #[test]
+    fn rest_is_unity_and_recovers_to_it() {
+        let fs = 192_000.0;
+        let mut x = sine(12.0, 1000.0, 0.2, fs);
+        x.extend(std::iter::repeat_n(0.0, (1.5 * fs) as usize));
+        let (_, g) = run(PyeRatio::Ratio3_1, PyeDecay::Decay100, &x, fs);
+        assert!(g[(0.19 * fs) as usize] < 0.5);
+        assert_eq!(*g.last().unwrap(), 1.0);
     }
 }
